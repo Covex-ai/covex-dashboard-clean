@@ -2,4 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #__next { height: 100%; }
+/* Theme tokens */
+:root {
+  --cx-bg: #0a0a0b;
+  --cx-surface: #0f1115;
+  --cx-border: #22262e;
+  --cx-text: #dcdfe6;
+  --cx-muted: #9aa2ad;
+  --cx-accent: #3b82f6;
+}
+
+.bg-cx-bg { background-color: var(--cx-bg); }
+.bg-cx-surface { background-color: var(--cx-surface); }
+.text-cx-text { color: var(--cx-text); }
+.text-cx-muted { color: var(--cx-muted); }
+.border-cx-border { border-color: var(--cx-border); }
+.bg-cx-accent { background-color: var(--cx-accent); }
