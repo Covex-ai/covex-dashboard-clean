@@ -1,59 +1,41 @@
 "use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
+const links = [
+  { href: "/dashboard", label: "Overview" },
+  { href: "/appointments", label: "Appointments" },
+  { href: "/services", label: "Services" },
+  { href: "/settings", label: "Settings" },
+];
 
-export default function LoginPage() {
-  const sb = useMemo(() => createBrowserSupabaseClient(), []);
-  const router = useRouter();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true); setError(null);
-    const { data, error } = await sb.auth.signInWithPassword({ email, password });
-    setBusy(false);
-    if (error) { setError(error.message); return; }
-    if (data?.user) router.replace("/appointments");
-  }
-
+export default function Sidebar() {
+  const pathname = usePathname();
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
-      <h1 className="text-xl font-semibold">Sign in</h1>
-
-      <div className="space-y-2">
-        <label className="text-sm text-slate-300">Email</label>
-        <input
-          type="email" required
-          className="w-full rounded-md bg-[#11161b] border border-white/10 px-3 py-2 outline-none"
-          value={email} onChange={(e) => setEmail(e.target.value)}
-          placeholder="owner@clientco.com"
-        />
+    <aside className="hidden md:block w-60 shrink-0">
+      <div className="covex-panel h-[calc(100vh-2rem)] sticky top-4 p-4">
+        <div className="mb-6">
+          <img src="/covex.svg" alt="Covex" className="h-5 w-auto opacity-90" />
+        </div>
+        <nav className="space-y-1">
+          {links.map((l) => {
+            const active = pathname?.startsWith(l.href);
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                className={`block px-3 py-2 rounded-lg border ${
+                  active ? "bg-white/10 border-white/10" : "border-transparent hover:bg-white/5"
+                }`}
+              >
+                {l.label}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="covex-divider my-4"></div>
+        <a href="/login" className="text-sm text-covex-mute hover:underline">Sign out</a>
       </div>
-
-      <div className="space-y-2">
-        <label className="text-sm text-slate-300">Password</label>
-        <input
-          type="password" required
-          className="w-full rounded-md bg-[#11161b] border border-white/10 px-3 py-2 outline-none"
-          value={password} onChange={(e) => setPassword(e.target.value)}
-          placeholder="••••••••"
-        />
-      </div>
-
-      {error && <div className="text-red-400 text-sm">{error}</div>}
-
-      <button
-        type="submit" disabled={busy}
-        className="w-full rounded-md bg-white/90 text-black font-medium py-2 hover:bg-white disabled:opacity-60"
-      >
-        {busy ? "Signing in…" : "Sign in"}
-      </button>
-      {/* No signup link. You provision accounts. */}
-    </form>
+    </aside>
   );
 }
