@@ -1,16 +1,18 @@
 /* app/globals.css */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-/* Optional dark theme surface close to your marketing site */
 :root {
   color-scheme: dark;
 }
 
+/* Covex dark theme surface */
 html, body {
   background: #0b1117;     /* deep black/blue */
   color: #e6edf3;          /* soft white */
+  font-synthesis-weight: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 a { color: #9ba8b3; }
