@@ -13,7 +13,7 @@ export default function Sidebar() {
   const pathname = usePathname();
   return (
     <aside className="hidden md:block w-60 shrink-0">
-      <div className="covex-panel h-[calc(100vh-2rem)] sticky top-4 p-4">
+      <div className="h-[calc(100vh-2rem)] sticky top-4 p-4 rounded-2xl border border-[#22262e] bg-[#0f1115] shadow-[0_6px_24px_rgba(0,0,0,.35)]">
         <div className="mb-6">
           <img src="/covex.svg" alt="Covex" className="h-5 w-auto opacity-90" />
         </div>
@@ -33,8 +33,8 @@ export default function Sidebar() {
             );
           })}
         </nav>
-        <div className="covex-divider my-4"></div>
-        <a href="/login" className="text-sm text-covex-mute hover:underline">Sign out</a>
+        <div className="border-t border-[#22262e] my-4" />
+        <a href="/login" className="text-sm text-[#9aa2ad] hover:underline">Sign out</a>
       </div>
     </aside>
   );
