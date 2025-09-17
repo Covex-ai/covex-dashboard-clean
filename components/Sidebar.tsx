@@ -1,4 +1,6 @@
 "use client";
+
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -11,30 +13,30 @@ const links = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+
   return (
-    <aside className="hidden md:block w-60 shrink-0">
-      <div className="h-[calc(100vh-2rem)] sticky top-4 p-4 rounded-2xl border border-[#22262e] bg-[#0f1115] shadow-[0_6px_24px_rgba(0,0,0,.35)]">
-        <div className="mb-6">
-          <img src="/covex.svg" alt="Covex" className="h-5 w-auto opacity-90" />
-        </div>
-        <nav className="space-y-1">
-          {links.map((l) => {
-            const active = pathname?.startsWith(l.href);
-            return (
-              <Link
-                key={l.href}
-                href={l.href}
-                className={`block px-3 py-2 rounded-lg border ${
-                  active ? "bg-white/10 border-white/10" : "border-transparent hover:bg-white/5"
-                }`}
-              >
-                {l.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="border-t border-[#22262e] my-4" />
-        <a href="/login" className="text-sm text-[#9aa2ad] hover:underline">Sign out</a>
+    <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-surface">
+      <div className="h-16 px-5 flex items-center gap-3 border-b border-cx-border">
+        <Image src="/covex.svg" alt="Covex" width={24} height={24} />
+        <span className="font-semibold text-cx-text">Covex</span>
+      </div>
+      <nav className="flex-1 p-3">
+        {links.map((l) => {
+          const active = pathname === l.href;
+          return (
+            <Link
+              key={l.href}
+              href={l.href}
+              className={`block px-4 py-2.5 rounded-xl mb-1 font-medium transition
+                ${active ? "bg-cx-bg text-cx-text" : "text-cx-muted hover:text-cx-text hover:bg-cx-bg/60"}`}
+            >
+              {l.label}
+            </Link>
+          );
+        })}
+      </nav>
+      <div className="p-4 border-t border-cx-border text-xs text-cx-muted">
+        © {new Date().getFullYear()} Covex
       </div>
     </aside>
   );
