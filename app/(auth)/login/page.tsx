@@ -1,58 +1,46 @@
 "use client";
 
-import { useState } from "react";
+import Image from "next/image";
+import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    // TODO: wire real auth; for now go to dashboard
-    window.location.href = "/dashboard";
-  }
+  const router = useRouter();
 
   return (
-    <div className="grid place-items-center min-h-[70vh]">
-      <div className="w-full max-w-md rounded-2xl border border-[#22262e] bg-[#0f1115] shadow-[0_6px_24px_rgba(0,0,0,.35)] p-6">
-        <div className="mb-6">
-          <h1 className="text-2xl font-semibold">Sign in</h1>
-          <p className="text-sm text-[#9aa2ad] mt-1">Access your Covex dashboard</p>
+    <div className="min-h-screen grid place-items-center">
+      <div className="w-full max-w-md rounded-2xl bg-cx-surface p-8 shadow-xl border border-cx-border">
+        <div className="flex items-center gap-3 mb-6">
+          <Image src="/covex.svg" alt="Covex" width={28} height={28} />
+          <span className="text-lg font-semibold tracking-wide text-cx-text">Covex</span>
         </div>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div>
-            <label className="text-sm text-[#9aa2ad]">Email</label>
-            <input
-              className="mt-1 w-full rounded-lg bg-[#0c0f14] border border-[#22262e] px-3 py-2 text-sm outline-none focus:border-[#3b82f6]"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </div>
-          <div>
-            <label className="text-sm text-[#9aa2ad]">Password</label>
-            <input
-              className="mt-1 w-full rounded-lg bg-[#0c0f14] border border-[#22262e] px-3 py-2 text-sm outline-none focus:border-[#3b82f6]"
-              type="password"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              required
-            />
-          </div>
+
+        <h1 className="text-2xl font-semibold mb-2 text-cx-text">Sign in</h1>
+        <p className="text-sm text-cx-muted mb-6">
+          Accounts are provisioned by Covex. No public signups.
+        </p>
+
+        <div className="space-y-3">
+          <input
+            type="email"
+            placeholder="Email"
+            className="w-full rounded-xl bg-cx-bg px-4 py-3 outline-none border border-cx-border text-cx-text placeholder:text-cx-muted"
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            className="w-full rounded-xl bg-cx-bg px-4 py-3 outline-none border border-cx-border text-cx-text placeholder:text-cx-muted"
+          />
           <button
-            type="submit"
-            disabled={busy}
-            className="w-full inline-flex items-center justify-center rounded-lg bg-[#3b82f6] text-white font-medium px-4 py-2 hover:opacity-90 transition"
+            onClick={() => router.push("/dashboard")}
+            className="w-full rounded-xl px-4 py-3 bg-cx-accent/90 hover:bg-cx-accent transition text-white font-medium"
           >
-            {busy ? "Signing in…" : "Sign in"}
+            Sign in
           </button>
-        </form>
-        <div className="text-xs text-[#9aa2ad] mt-6">
-          Accounts are created by your team—no public sign-ups.
         </div>
+
+        <p className="text-xs text-cx-muted mt-6">
+          By continuing, you agree to the Terms.
+        </p>
       </div>
     </div>
   );
