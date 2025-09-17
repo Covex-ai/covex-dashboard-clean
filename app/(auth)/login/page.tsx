@@ -1,41 +1,51 @@
-// app/(auth)/login/page.tsx
 "use client";
 
+import { useState } from "react";
+
 export default function LoginPage() {
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMsg("");
+
+    // TODO: swap with your real auth (Supabase or custom).
+    // For now just accept anything and push into dashboard.
+    window.location.href = "/dashboard";
+  }
+
   return (
-    <main className="min-h-screen grid place-items-center">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-black/40 p-8 shadow-xl">
-        <div className="mb-6 text-center">
-          <div className="text-2xl font-semibold tracking-wide">Covex</div>
-          <div className="mt-1 text-sm text-slate-400">Sign in to your dashboard</div>
+    <div className="grid place-items-center min-h-[70vh]">
+      <div className="covex-panel w-full max-w-md p-6">
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold">Sign in</h1>
+          <p className="text-sm text-covex-mute mt-1">Access your Covex dashboard</p>
         </div>
 
-        {/* Replace with your real auth form/flow later; this is just to compile */}
-        <form className="space-y-3" onSubmit={(e) => e.preventDefault()}>
-          <input
-            type="email"
-            placeholder="Email"
-            className="w-full rounded bg-[#121a21] border border-white/10 p-3 outline-none"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            className="w-full rounded bg-[#121a21] border border-white/10 p-3 outline-none"
-            required
-          />
-          <button
-            type="submit"
-            className="w-full rounded bg-white text-black font-medium py-3"
-          >
-            Sign in
+        <form onSubmit={onSubmit} className="space-y-4">
+          <div>
+            <label className="text-sm text-covex-mute">Email</label>
+            <input className="covex-input mt-1" type="email" value={email} onChange={e => setEmail(e.target.value)} required />
+          </div>
+          <div>
+            <label className="text-sm text-covex-mute">Password</label>
+            <input className="covex-input mt-1" type="password" value={pw} onChange={e => setPw(e.target.value)} required />
+          </div>
+          <button type="submit" className="covex-btn-dark w-full" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
 
-        <p className="mt-4 text-center text-xs text-slate-500">
-          Don’t see “Create account” here on purpose — accounts are created by you.
-        </p>
+        {msg && <div className="text-sm mt-3 text-covex-mute">{msg}</div>}
+
+        <div className="text-xs text-covex-mute mt-6">
+          Your team creates accounts for you—no public sign-ups.
+        </div>
       </div>
-    </main>
+    </div>
   );
 }
