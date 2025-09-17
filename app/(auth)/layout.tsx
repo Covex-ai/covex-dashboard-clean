@@ -4,6 +4,6 @@ export default function AuthLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // No sidebar/header here on purpose
+  // No sidebar or app shell here on purpose
   return <>{children}</>;
 }
