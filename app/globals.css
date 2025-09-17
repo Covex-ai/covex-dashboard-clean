@@ -2,6 +2,39 @@
 @tailwind components;
 @tailwind utilities;
 
-* { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-::-webkit-scrollbar { height: 10px; width: 10px; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 8px; }
+/* Covex base */
+:root {
+  --bg: #0a0a0b;
+  --panel: #0f1115;
+  --border: #22262e;
+  --text: #dcdfe6;
+  --mute: #9aa2ad;
+}
+
+html, body, #__next {
+  height: 100%;
+}
+
+body {
+  @apply bg-covex-bg text-covex-text antialiased;
+}
+
+/* Reusable panel style */
+.covex-panel {
+  @apply bg-covex-panel border border-covex-border rounded-xl2 shadow-soft;
+}
+
+.covex-input {
+  @apply w-full rounded-lg bg-[#0c0f14] border border-covex-border px-3 py-2 text-sm outline-none focus:border-covex-blue;
+}
+
+.covex-btn {
+  @apply inline-flex items-center justify-center rounded-lg bg-white/90 text-black font-medium px-4 py-2 hover:bg-white transition;
+}
+.covex-btn-dark {
+  @apply inline-flex items-center justify-center rounded-lg bg-covex-blue text-white font-medium px-4 py-2 hover:opacity-90 transition;
+}
+
+.covex-divider {
+  @apply border-t border-covex-border;
+}
