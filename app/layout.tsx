@@ -1,17 +1,19 @@
+// app/layout.tsx
 import "./globals.css";
-import type { Metadata } from "next";
 
-export const metadata: Metadata = {
+export const metadata = {
   title: "Covex Dashboard",
-  description: "Modern front desk — on brand."
+  description: "Analytics & scheduling",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html lang="en" className="h-full">
-      <body className="min-h-full bg-covex-bg text-slate-100 antialiased">
-        {children}
-      </body>
+    <html lang="en">
+      <body className="bg-[#0b0f14] text-white antialiased">{children}</body>
     </html>
   );
 }
