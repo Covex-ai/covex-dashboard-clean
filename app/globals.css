@@ -1,11 +1,16 @@
+/* app/globals.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* Optional dark theme surface close to your marketing site */
 :root {
   color-scheme: dark;
 }
 
-body {
-  @apply bg-covexBg text-white;
+html, body {
+  background: #0b1117;     /* deep black/blue */
+  color: #e6edf3;          /* soft white */
 }
+
+a { color: #9ba8b3; }
