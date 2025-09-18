@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
 
-type ProfileRow = { business_id: string | null };
+/** Table types (minimal, enough for strict TS) */
+type ProfileRow = { business_id: string | null };                // for SELECT
+type ProfileUpsert = { id: string; business_id: string | null }; // for UPSERT
 
 export default function SettingsPage() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
@@ -15,19 +17,18 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
       const { data: userRes } = await supabase.auth.getUser();
-      const uid = userRes?.user?.id;
+      const uid = userRes?.user?.id ?? null;
       setEmail(userRes?.user?.email ?? "(not signed in)");
       if (!uid) return;
 
-      // Get the user's profile; cast the maybeSingle() result to a typed object to avoid "never"
-      const { data } = await supabase
-        .from("profiles")
+      // Typed SELECT to avoid `never` from maybeSingle()
+      const { data, error } = await supabase
+        .from<ProfileRow>("profiles")
         .select("business_id")
         .eq("id", uid)
         .maybeSingle();
 
-      const profile = data as ProfileRow | null;
-      if (profile?.business_id) setBusinessId(profile.business_id);
+      if (!error && data?.business_id) setBusinessId(data.business_id);
     })();
   }, [supabase]);
 
@@ -36,16 +37,18 @@ export default function SettingsPage() {
     setMsg("");
 
     const { data: userRes } = await supabase.auth.getUser();
-    const uid = userRes?.user?.id;
+    const uid = userRes?.user?.id ?? null;
     if (!uid) {
       setMsg("Sign in with Supabase Auth to save.");
       setSaving(false);
       return;
     }
 
+    // Typed UPSERT so TS knows the payload shape
+    const payload: ProfileUpsert = { id: uid, business_id: businessId || null };
     const { error } = await supabase
-      .from("profiles")
-      .upsert({ id: uid, business_id: businessId });
+      .from<ProfileUpsert>("profiles")
+      .upsert(payload);
 
     setMsg(error ? error.message : "Saved.");
     setSaving(false);
