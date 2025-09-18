@@ -1,8 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
+
+export default function AppointmentsPage() {
+  return (
+    <Suspense fallback={<div className="text-cx-muted">Loading…</div>}>
+      <AppointmentsInner />
+    </Suspense>
+  );
+}
 
 type Appt = {
   id: number;
@@ -26,23 +34,26 @@ const ranges = [
   { k: "future", days: 3650 },
 ];
 
-export default function AppointmentsPage() {
+function AppointmentsInner() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
   const [q, setQ] = useState("");
   const [rangeKey, setRangeKey] = useState("30");
   const [rows, setRows] = useState<Appt[]>([]);
   const [loading, setLoading] = useState(true);
-  const sp = useSearchParams();
+  const sp = useSearchParams(); // <- must be inside Suspense
   const bizOverride = sp.get("biz") || undefined;
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       const since = new Date();
-      const r = ranges.find(r => r.k === rangeKey) ?? ranges[1];
+      const r = ranges.find((r) => r.k === rangeKey) ?? ranges[1];
       since.setDate(since.getDate() - r.days);
 
-      let query = supabase.from("appointments").select("*").gte("start_ts", since.toISOString());
+      let query = supabase
+        .from("appointments")
+        .select("*")
+        .gte("start_ts", since.toISOString());
       if (bizOverride) query = query.eq("business_id", bizOverride);
 
       const { data } = await query.order("start_ts", { ascending: true }).limit(1000);
@@ -51,7 +62,7 @@ export default function AppointmentsPage() {
     })();
   }, [rangeKey, bizOverride, supabase]);
 
-  const filtered = rows.filter(r => {
+  const filtered = rows.filter((r) => {
     const needle = q.trim().toLowerCase();
     if (!needle) return true;
     const hay = [
@@ -61,7 +72,9 @@ export default function AppointmentsPage() {
       r.normalized_service ?? "",
       r.status,
       r.source,
-    ].join(" ").toLowerCase();
+    ]
+      .join(" ")
+      .toLowerCase();
     return hay.includes(needle);
   });
 
@@ -72,16 +85,16 @@ export default function AppointmentsPage() {
         <div className="flex gap-3">
           <input
             value={q}
-            onChange={e => setQ(e.target.value)}
+            onChange={(e) => setQ(e.target.value)}
             placeholder="Search name / phone / service"
             className="rounded-xl bg-cx-surface border border-cx-border px-4 py-2 outline-none text-cx-text placeholder:text-cx-muted"
           />
           <select
             value={rangeKey}
-            onChange={e => setRangeKey(e.target.value)}
+            onChange={(e) => setRangeKey(e.target.value)}
             className="rounded-xl bg-cx-surface border border-cx-border px-3 py-2 outline-none"
           >
-            {ranges.map(r => (
+            {ranges.map((r) => (
               <option key={r.k} value={r.k}>
                 {r.k === "future" ? "Future" : `${r.k} days`}
               </option>
@@ -94,19 +107,36 @@ export default function AppointmentsPage() {
         <table className="w-full text-sm">
           <thead className="text-cx-muted">
             <tr className="[&_th]:px-5 [&_th]:py-3 text-left">
-              <th>Date</th><th>Time</th><th>Service</th><th>Name</th><th>Phone</th><th>Source</th><th>Status</th><th>Price</th>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Service</th>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Price</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td className="px-5 py-4 text-cx-muted" colSpan={8}>Loading…</td></tr>
+              <tr>
+                <td className="px-5 py-4 text-cx-muted" colSpan={8}>
+                  Loading…
+                </td>
+              </tr>
             ) : filtered.length === 0 ? (
-              <tr><td className="px-5 py-6 text-cx-muted" colSpan={8}>No matching appointments.</td></tr>
+              <tr>
+                <td className="px-5 py-6 text-cx-muted" colSpan={8}>
+                  No matching appointments.
+                </td>
+              </tr>
             ) : (
-              filtered.map(a => (
+              filtered.map((a) => (
                 <tr key={a.id} className="border-t border-cx-border/70">
                   <td className="px-5 py-3">{new Date(a.start_ts).toLocaleDateString()}</td>
-                  <td className="px-5 py-3">{new Date(a.start_ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
+                  <td className="px-5 py-3">
+                    {new Date(a.start_ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </td>
                   <td className="px-5 py-3">{a.normalized_service ?? a.service_raw ?? ""}</td>
                   <td className="px-5 py-3">{a.caller_name ?? ""}</td>
                   <td className="px-5 py-3">{formatPhone(a.caller_phone_e164)}</td>
@@ -126,7 +156,7 @@ export default function AppointmentsPage() {
 function formatPhone(p?: string | null) {
   if (!p) return "";
   const d = p.replace(/\D/g, "");
-  if (d.length === 11 && d.startsWith("1")) return `+1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
-  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  if (d.length === 11 && d.startsWith("1")) return `+1 (${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
   return p;
 }
