@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
 
+type ProfileRow = { business_id: string | null };
+
 export default function SettingsPage() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
   const [email, setEmail] = useState<string>("-");
@@ -16,20 +18,30 @@ export default function SettingsPage() {
       const uid = userRes?.user?.id;
       setEmail(userRes?.user?.email ?? "(not signed in)");
       if (!uid) return;
+
+      // Get the user's profile; cast the maybeSingle() result to a typed object to avoid "never"
       const { data } = await supabase
         .from("profiles")
         .select("business_id")
         .eq("id", uid)
         .maybeSingle();
-      if (data?.business_id) setBusinessId(data.business_id);
+
+      const profile = data as ProfileRow | null;
+      if (profile?.business_id) setBusinessId(profile.business_id);
     })();
   }, [supabase]);
 
   async function save() {
-    setSaving(true); setMsg("");
+    setSaving(true);
+    setMsg("");
+
     const { data: userRes } = await supabase.auth.getUser();
     const uid = userRes?.user?.id;
-    if (!uid) { setMsg("Sign in with Supabase Auth to save."); setSaving(false); return; }
+    if (!uid) {
+      setMsg("Sign in with Supabase Auth to save.");
+      setSaving(false);
+      return;
+    }
 
     const { error } = await supabase
       .from("profiles")
@@ -53,7 +65,7 @@ export default function SettingsPage() {
           <div className="text-sm text-cx-muted mb-1">Business ID (UUID)</div>
           <input
             value={businessId}
-            onChange={e => setBusinessId(e.target.value)}
+            onChange={(e) => setBusinessId(e.target.value)}
             placeholder="11111111-1111-1111-1111-111111111111"
             className="w-full rounded-xl bg-cx-bg px-4 py-3 outline-none border border-cx-border text-cx-text placeholder:text-cx-muted"
           />
