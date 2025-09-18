@@ -19,13 +19,6 @@ type Appt = {
   price_usd: string | null;
 };
 
-function prettyPhone(p?: string | null) {
-  if (!p) return "";
-  const d = p.replace(/\D/g, "");
-  if (d.length === 11 && d.startsWith("1")) return `+1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
-  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
-  return p;
-}
 const ranges = [
   { k: "7", days: 7 },
   { k: "30", days: 30 },
@@ -51,7 +44,8 @@ export default function AppointmentsPage() {
 
       let query = supabase.from("appointments").select("*").gte("start_ts", since.toISOString());
       if (bizOverride) query = query.eq("business_id", bizOverride);
-      const { data } = await query.order("start_ts", { ascending: true }).limit(500);
+
+      const { data } = await query.order("start_ts", { ascending: true }).limit(1000);
       setRows((data ?? []) as Appt[]);
       setLoading(false);
     })();
@@ -66,7 +60,7 @@ export default function AppointmentsPage() {
       r.service_raw ?? "",
       r.normalized_service ?? "",
       r.status,
-      r.source
+      r.source,
     ].join(" ").toLowerCase();
     return hay.includes(needle);
   });
@@ -87,7 +81,11 @@ export default function AppointmentsPage() {
             onChange={e => setRangeKey(e.target.value)}
             className="rounded-xl bg-cx-surface border border-cx-border px-3 py-2 outline-none"
           >
-            {ranges.map(r => <option key={r.k} value={r.k}>{r.k === "future" ? "Future" : `${r.k} days`}</option>)}
+            {ranges.map(r => (
+              <option key={r.k} value={r.k}>
+                {r.k === "future" ? "Future" : `${r.k} days`}
+              </option>
+            ))}
           </select>
         </div>
       </div>
@@ -104,21 +102,31 @@ export default function AppointmentsPage() {
               <tr><td className="px-5 py-4 text-cx-muted" colSpan={8}>Loading…</td></tr>
             ) : filtered.length === 0 ? (
               <tr><td className="px-5 py-6 text-cx-muted" colSpan={8}>No matching appointments.</td></tr>
-            ) : filtered.map(a => (
-              <tr key={a.id} className="border-t border-cx-border/70">
-                <td className="px-5 py-3">{new Date(a.start_ts).toLocaleDateString()}</td>
-                <td className="px-5 py-3">{new Date(a.start_ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
-                <td className="px-5 py-3">{a.normalized_service ?? a.service_raw ?? ""}</td>
-                <td className="px-5 py-3">{a.caller_name ?? ""}</td>
-                <td className="px-5 py-3">{prettyPhone(a.caller_phone_e164)}</td>
-                <td className="px-5 py-3">{a.source}</td>
-                <td className="px-5 py-3">{a.status}</td>
-                <td className="px-5 py-3">{a.price_usd ? `$${parseFloat(a.price_usd).toFixed(2)}` : "-"}</td>
-              </tr>
-            ))}
+            ) : (
+              filtered.map(a => (
+                <tr key={a.id} className="border-t border-cx-border/70">
+                  <td className="px-5 py-3">{new Date(a.start_ts).toLocaleDateString()}</td>
+                  <td className="px-5 py-3">{new Date(a.start_ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
+                  <td className="px-5 py-3">{a.normalized_service ?? a.service_raw ?? ""}</td>
+                  <td className="px-5 py-3">{a.caller_name ?? ""}</td>
+                  <td className="px-5 py-3">{formatPhone(a.caller_phone_e164)}</td>
+                  <td className="px-5 py-3">{a.source}</td>
+                  <td className="px-5 py-3">{a.status}</td>
+                  <td className="px-5 py-3">{a.price_usd ? `$${parseFloat(a.price_usd).toFixed(2)}` : "-"}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
     </div>
   );
+}
+
+function formatPhone(p?: string | null) {
+  if (!p) return "";
+  const d = p.replace(/\D/g, "");
+  if (d.length === 11 && d.startsWith("1")) return `+1 (${d.slice(1,4)}) ${d.slice(4,7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  return p;
 }
