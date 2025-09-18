@@ -1,148 +1,171 @@
-"use client";
+'use client';
 
-import { Suspense, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
+import { useEffect, useMemo, useState, Suspense } from 'react';
+import { createBrowserClient } from '@/lib/supabaseBrowser';
+import { priceFor, fmtUSD } from '@/lib/pricing';
 
-export default function AppointmentsPage() {
-  return (
-    <Suspense fallback={<div className="text-cx-muted">Loading…</div>}>
-      <AppointmentsInner />
-    </Suspense>
-  );
-}
-
-type Appt = {
+type Row = {
   id: number;
   business_id: string;
   booking_id: string | null;
-  status: "Booked" | "Rescheduled" | "Cancelled" | "Inquiry";
-  source: string;
+  status: 'Booked' | 'Rescheduled' | 'Cancelled' | 'Inquiry';
+  source: string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
   service_raw: string | null;
-  normalized_service: "ACUTE_30" | "STANDARD_45" | "NEWPATIENT_60" | null;
-  start_ts: string;
+  normalized_service: string | null;
+  start_ts: string; // ISO
   end_ts: string | null;
-  price_usd: string | null;
+  price_usd: number | null;
 };
 
 const ranges = [
-  { k: "7", days: 7 },
-  { k: "30", days: 30 },
-  { k: "90", days: 90 },
-  { k: "future", days: 3650 },
+  { label: '7 days', days: 7 },
+  { label: '30 days', days: 30 },
+  { label: '90 days', days: 90 },
+  { label: 'Future', days: 3650 },
 ];
 
+function prettyPhone(v?: string | null) {
+  if (!v) return '-';
+  // assume already E.164, just display
+  return v.replace('+1', '+1 ').trim();
+}
+
+function formatDate(ts: string) {
+  const d = new Date(ts);
+  return d.toLocaleDateString();
+}
+function formatTime(ts: string) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 function AppointmentsInner() {
-  const supabase = useMemo(() => createBrowserSupabaseClient(), []);
-  const [q, setQ] = useState("");
-  const [rangeKey, setRangeKey] = useState("30");
-  const [rows, setRows] = useState<Appt[]>([]);
+  const supabase = createBrowserClient();
+  const [rows, setRows] = useState<Row[]>([]);
+  const [search, setSearch] = useState('');
+  const [range, setRange] = useState(ranges[1]); // default 30 days
   const [loading, setLoading] = useState(true);
-  const sp = useSearchParams(); // <- must be inside Suspense
-  const bizOverride = sp.get("biz") || undefined;
 
   useEffect(() => {
     (async () => {
       setLoading(true);
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u.user?.id;
+      if (!uid) {
+        setRows([]);
+        setLoading(false);
+        return;
+      }
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('business_id')
+        .eq('id', uid)
+        .maybeSingle();
+
+      const biz = prof?.business_id;
+      if (!biz) {
+        setRows([]);
+        setLoading(false);
+        return;
+      }
+
       const since = new Date();
-      const r = ranges.find((r) => r.k === rangeKey) ?? ranges[1];
-      since.setDate(since.getDate() - r.days);
+      since.setDate(since.getDate() - range.days);
 
-      let query = supabase
-        .from("appointments")
-        .select("*")
-        .gte("start_ts", since.toISOString());
-      if (bizOverride) query = query.eq("business_id", bizOverride);
+      let q = supabase
+        .from('appointments')
+        .select(
+          'id,business_id,booking_id,status,source,caller_name,caller_phone_e164,service_raw,normalized_service,start_ts,end_ts,price_usd'
+        )
+        .eq('business_id', biz)
+        .gte('start_ts', since.toISOString())
+        .order('start_ts', { ascending: true });
 
-      const { data } = await query.order("start_ts", { ascending: true }).limit(1000);
-      setRows((data ?? []) as Appt[]);
+      if (search.trim()) {
+        const s = `%${search.trim()}%`;
+        q = q.or(
+          `caller_name.ilike.${s},caller_phone_e164.ilike.${s},service_raw.ilike.${s},normalized_service.ilike.${s}`
+        );
+      }
+
+      const { data } = await q;
+      setRows(data ?? []);
       setLoading(false);
     })();
-  }, [rangeKey, bizOverride, supabase]);
+  }, [supabase, range, search]);
 
-  const filtered = rows.filter((r) => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return true;
-    const hay = [
-      r.caller_name ?? "",
-      r.caller_phone_e164 ?? "",
-      r.service_raw ?? "",
-      r.normalized_service ?? "",
-      r.status,
-      r.source,
-    ]
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(needle);
-  });
+  const computed = useMemo(() => {
+    return rows.map((r) => ({
+      ...r,
+      derived_price: priceFor(r.normalized_service, r.price_usd),
+    }));
+  }, [rows]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-        <h1 className="text-xl font-semibold">Appointments</h1>
-        <div className="flex gap-3">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search name / phone / service"
-            className="rounded-xl bg-cx-surface border border-cx-border px-4 py-2 outline-none text-cx-text placeholder:text-cx-muted"
-          />
-          <select
-            value={rangeKey}
-            onChange={(e) => setRangeKey(e.target.value)}
-            className="rounded-xl bg-cx-surface border border-cx-border px-3 py-2 outline-none"
-          >
-            {ranges.map((r) => (
-              <option key={r.k} value={r.k}>
-                {r.k === "future" ? "Future" : `${r.k} days`}
-              </option>
-            ))}
-          </select>
-        </div>
+    <div className="p-6">
+      <div className="mb-4 flex items-center gap-3">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name / phone / service"
+          className="bg-[#0f1115] border border-[#22262e] text-[#dcdfe6] placeholder-[#9aa2ad] rounded-xl px-3 py-2 w-72"
+        />
+        <select
+          value={range.days}
+          onChange={(e) => {
+            const d = Number(e.target.value);
+            setRange(ranges.find((r) => r.days === d) || ranges[1]);
+          }}
+          className="bg-[#0f1115] border border-[#22262e] text-[#dcdfe6] rounded-xl px-3 py-2"
+        >
+          {ranges.map((r) => (
+            <option key={r.days} value={r.days}>
+              {r.label}
+            </option>
+          ))}
+        </select>
       </div>
 
-      <div className="rounded-2xl bg-cx-surface border border-cx-border shadow-xl overflow-x-auto">
+      <div className="rounded-2xl shadow-lg bg-[#0f1115] border border-[#22262e] overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="text-cx-muted">
-            <tr className="[&_th]:px-5 [&_th]:py-3 text-left">
-              <th>Date</th>
-              <th>Time</th>
-              <th>Service</th>
-              <th>Name</th>
-              <th>Phone</th>
-              <th>Source</th>
-              <th>Status</th>
-              <th>Price</th>
+          <thead className="text-[#9aa2ad] bg-[#0a0a0b]">
+            <tr>
+              <th className="text-left px-4 py-3">Date</th>
+              <th className="text-left px-4 py-3">Time</th>
+              <th className="text-left px-4 py-3">Service</th>
+              <th className="text-left px-4 py-3">Name</th>
+              <th className="text-left px-4 py-3">Phone</th>
+              <th className="text-left px-4 py-3">Source</th>
+              <th className="text-left px-4 py-3">Status</th>
+              <th className="text-left px-4 py-3">Price</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="text-[#dcdfe6]">
             {loading ? (
               <tr>
-                <td className="px-5 py-4 text-cx-muted" colSpan={8}>
+                <td colSpan={8} className="px-4 py-6 text-center text-[#9aa2ad]">
                   Loading…
                 </td>
               </tr>
-            ) : filtered.length === 0 ? (
+            ) : computed.length === 0 ? (
               <tr>
-                <td className="px-5 py-6 text-cx-muted" colSpan={8}>
-                  No matching appointments.
+                <td colSpan={8} className="px-4 py-6 text-center text-[#9aa2ad]">
+                  No appointments.
                 </td>
               </tr>
             ) : (
-              filtered.map((a) => (
-                <tr key={a.id} className="border-t border-cx-border/70">
-                  <td className="px-5 py-3">{new Date(a.start_ts).toLocaleDateString()}</td>
-                  <td className="px-5 py-3">
-                    {new Date(a.start_ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  </td>
-                  <td className="px-5 py-3">{a.normalized_service ?? a.service_raw ?? ""}</td>
-                  <td className="px-5 py-3">{a.caller_name ?? ""}</td>
-                  <td className="px-5 py-3">{formatPhone(a.caller_phone_e164)}</td>
-                  <td className="px-5 py-3">{a.source}</td>
-                  <td className="px-5 py-3">{a.status}</td>
-                  <td className="px-5 py-3">{a.price_usd ? `$${parseFloat(a.price_usd).toFixed(2)}` : "-"}</td>
+              computed.map((r) => (
+                <tr key={r.id} className="border-t border-[#22262e]/60">
+                  <td className="px-4 py-3">{formatDate(r.start_ts)}</td>
+                  <td className="px-4 py-3">{formatTime(r.start_ts)}</td>
+                  <td className="px-4 py-3">{r.normalized_service ?? r.service_raw ?? '-'}</td>
+                  <td className="px-4 py-3">{r.caller_name ?? '-'}</td>
+                  <td className="px-4 py-3">{prettyPhone(r.caller_phone_e164)}</td>
+                  <td className="px-4 py-3">{r.source ?? '-'}</td>
+                  <td className="px-4 py-3">{r.status}</td>
+                  <td className="px-4 py-3">{fmtUSD(r.derived_price ?? null)}</td>
                 </tr>
               ))
             )}
@@ -153,10 +176,10 @@ function AppointmentsInner() {
   );
 }
 
-function formatPhone(p?: string | null) {
-  if (!p) return "";
-  const d = p.replace(/\D/g, "");
-  if (d.length === 11 && d.startsWith("1")) return `+1 (${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`;
-  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
-  return p;
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-6 text-[#9aa2ad]">Loading…</div>}>
+      <AppointmentsInner />
+    </Suspense>
+  );
 }
