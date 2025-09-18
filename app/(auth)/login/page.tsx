@@ -1,14 +1,23 @@
 'use client';
-
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import { createBrowserClient } from '@/lib/supabaseBrowser';
 
 export default function LoginPage() {
   const router = useRouter();
+  const supabase = createBrowserClient();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  function mockSignIn(e?: React.FormEvent) {
-    e?.preventDefault();
-    // Mock sign-in: just route into the app
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setErr(null); setLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (error) { setErr(error.message); return; }
     router.push('/dashboard');
   }
 
@@ -20,26 +29,17 @@ export default function LoginPage() {
           <div className="text-[#dcdfe6] text-xl">Covex</div>
         </div>
 
-        <form onSubmit={mockSignIn} className="space-y-3">
-          <input
-            className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6] placeholder-[#9aa2ad]"
-            placeholder="Email"
-            type="email"
-          />
-          <input
-            className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6] placeholder-[#9aa2ad]"
-            placeholder="Password"
-            type="password"
-          />
-          <button
-            type="submit"
-            className="w-full bg-[#3b82f6] hover:opacity-90 text-white rounded-xl px-4 py-2"
-          >
-            Continue
+        <form onSubmit={onSubmit} className="space-y-3">
+          <input className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6]"
+                 placeholder="Email" type="email" value={email} onChange={(e)=>setEmail(e.target.value)} />
+          <input className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6]"
+                 placeholder="Password" type="password" value={password} onChange={(e)=>setPassword(e.target.value)} />
+          <button type="submit" disabled={loading}
+                  className="w-full bg-[#3b82f6] hover:opacity-90 text-white rounded-xl px-4 py-2">
+            {loading ? 'Signing in…' : 'Continue'}
           </button>
-          <div className="text-xs text-[#9aa2ad]">
-            Accounts are created by us — no public signups.
-          </div>
+          {err && <div className="text-sm text-red-400">{err}</div>}
+          <div className="text-xs text-[#9aa2ad]">Accounts are created by us — no public signups.</div>
         </form>
       </div>
     </div>
