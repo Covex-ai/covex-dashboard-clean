@@ -6,8 +6,9 @@ import Image from 'next/image';
 export default function LoginPage() {
   const router = useRouter();
 
-  function mockSignIn() {
-    // Mock auth for now: just route into the app.
+  function mockSignIn(e?: React.FormEvent) {
+    e?.preventDefault();
+    // Mock sign-in: just route into the app
     router.push('/dashboard');
   }
 
@@ -19,7 +20,7 @@ export default function LoginPage() {
           <div className="text-[#dcdfe6] text-xl">Covex</div>
         </div>
 
-        <div className="space-y-3">
+        <form onSubmit={mockSignIn} className="space-y-3">
           <input
             className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6] placeholder-[#9aa2ad]"
             placeholder="Email"
@@ -31,7 +32,7 @@ export default function LoginPage() {
             type="password"
           />
           <button
-            onClick={mockSignIn}
+            type="submit"
             className="w-full bg-[#3b82f6] hover:opacity-90 text-white rounded-xl px-4 py-2"
           >
             Continue
@@ -39,7 +40,7 @@ export default function LoginPage() {
           <div className="text-xs text-[#9aa2ad]">
             Accounts are created by us — no public signups.
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );
