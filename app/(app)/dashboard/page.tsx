@@ -22,7 +22,7 @@ type Row = {
   normalized_service: 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60' | null;
   start_ts: string;
   end_ts: string | null;
-  price_usd: string | number | null; // numeric -> string
+  price_usd: string | number | null; // Supabase numeric -> string
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -35,7 +35,7 @@ function fmtTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
-// <<< NEW: numeric coercion helper
+// numeric coercion helper for Supabase numeric
 function toNumber(v: number | string | null | undefined): number | null {
   if (v === null || v === undefined) return null;
   const n = typeof v === 'number' ? v : parseFloat(v);
@@ -100,7 +100,10 @@ function Inner() {
   const booked30 = rows.filter(r => r.status === 'Booked' || r.status === 'Rescheduled').length;
   const revenue30 = rows
     .filter(r => r.status !== 'Cancelled')
-    .reduce((sum, r) => sum + priceFor(r.normalized_service, toNumber(r.price_usd)), 0); // <<< FIX
+    .reduce((sum, r) => {
+      const p = priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0; // <-- coalesce to 0
+      return sum + p;
+    }, 0);
 
   // Chart #1: bookings per day (last 30d)
   const byDay = (() => {
@@ -127,14 +130,14 @@ function Inner() {
     const svc = new Map<string, number>();
     rows.forEach(r => {
       if (r.status === 'Cancelled') return;
-      const price = priceFor(r.normalized_service, toNumber(r.price_usd)); // <<< FIX
+      const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0); // <-- coalesce
       const key = r.normalized_service || 'Other';
       svc.set(key, (svc.get(key) || 0) + price);
     });
     return Array.from(svc.entries()).map(([service, revenue]) => ({ service, revenue }));
   })();
 
-  // Recent items (for table and feed)
+  // Recent items
   const recent = [...rows].sort(
     (a, b) =>
       new Date(b.start_ts).getTime() - new Date(a.start_ts).getTime()
@@ -244,7 +247,7 @@ function Inner() {
                 <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">No recent appointments</td></tr>
               ) : (
                 recent.map((r) => {
-                  const price = priceFor(r.normalized_service, toNumber(r.price_usd)); // <<< FIX
+                  const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0); // coalesce
                   return (
                     <tr key={r.id} className="border-t border-[#22262e]">
                       <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
