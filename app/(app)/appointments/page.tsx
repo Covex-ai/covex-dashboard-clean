@@ -19,8 +19,8 @@ type Row = {
   normalized_service: 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60' | null;
   start_ts: string;   // timestamptz (ISO)
   end_ts: string | null;
-  price_usd: string | number | null;
-  updated_at?: string | null; // optional (if you added audit columns)
+  price_usd: string | number | null; // Supabase numeric comes back as string
+  updated_at?: string | null; // optional audit column
 };
 
 function fmtDate(iso: string) {
@@ -34,7 +34,6 @@ function fmtTime(iso: string) {
 function prettyPhone(p?: string | null) {
   if (!p) return '-';
   try {
-    // simple pretty: +1 864 477-0924
     const clean = p.replace(/[^\d+]/g, '');
     if (clean.startsWith('+1') && clean.length === 12) {
       return `+1 (${clean.slice(2,5)}) ${clean.slice(5,8)}-${clean.slice(8)}`;
@@ -43,6 +42,12 @@ function prettyPhone(p?: string | null) {
   } catch {
     return p;
   }
+}
+// <<< NEW: safe numeric coercion for Supabase numeric -> JS number
+function toNumber(v: number | string | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 function Inner() {
@@ -55,7 +60,7 @@ function Inner() {
   const [range, setRange] = useState<'7' | '30' | '90' | 'Future'>('30');
   const [showCancelled, setShowCancelled] = useState(false);
 
-  // Resolve business id: ?biz= overrides; otherwise read the current user's profile.business_id
+  // Resolve business id
   const [biz, setBiz] = useState<string | null>(null);
 
   useEffect(() => {
@@ -69,7 +74,6 @@ function Inner() {
       const { data: u } = await supabase.auth.getUser();
       const uid = u.user?.id;
       if (!uid) {
-        // no auth (mock). Keep biz as null; expect server to be publicly readable or demo mode.
         setBiz(null);
         return;
       }
@@ -93,10 +97,8 @@ function Inner() {
         )
         .order('start_ts', { ascending: true });
 
-      // Scope by business if present (RLS enforces this in prod anyway)
       if (biz) query = query.eq('business_id', biz);
 
-      // Date range filter
       const now = new Date();
       if (range !== 'Future') {
         const days = range === '7' ? 7 : range === '30' ? 30 : 90;
@@ -112,7 +114,6 @@ function Inner() {
     })();
   }, [supabase, biz, range]);
 
-  // Client-side filters
   const visible = rows
     .filter((r) => (showCancelled ? true : r.status !== 'Cancelled'))
     .filter((r) => {
@@ -177,7 +178,7 @@ function Inner() {
               <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">No appointments</td></tr>
             ) : (
               visible.map((r) => {
-                const price = priceFor(r.normalized_service, r.price_usd);
+                const price = priceFor(r.normalized_service, toNumber(r.price_usd)); // <<< FIX
                 return (
                   <tr key={r.id} className={`border-t border-[#22262e] ${r.status === 'Cancelled' ? 'opacity-60' : ''}`}>
                     <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
