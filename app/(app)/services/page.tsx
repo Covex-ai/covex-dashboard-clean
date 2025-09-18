@@ -1,93 +1,186 @@
-"use client";
+'use client';
 
-import { useEffect, useMemo, useState } from "react";
-import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
+import { useEffect, useMemo, useState, Suspense } from 'react';
+import { createBrowserClient } from '@/lib/supabaseBrowser';
+import { priceFor, fmtUSD, SERVICE_PRICE_USD } from '@/lib/pricing';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 
 type Row = {
-  normalized_service: "ACUTE_30" | "STANDARD_45" | "NEWPATIENT_60" | null;
-  status: "Booked" | "Rescheduled" | "Cancelled" | "Inquiry";
-  price_usd: string | null;
+  id: number;
+  business_id: string;
+  status: 'Booked' | 'Rescheduled' | 'Cancelled' | 'Inquiry';
+  normalized_service: string | null;
+  service_raw: string | null;
+  start_ts: string;
+  price_usd: number | null;
 };
 
 const ranges = [
-  { k: "7", days: 7 },
-  { k: "30", days: 30 },
-  { k: "90", days: 90 },
+  { label: '7 days', days: 7 },
+  { label: '30 days', days: 30 },
+  { label: '90 days', days: 90 },
 ];
 
-export default function ServicesPage() {
-  const supabase = useMemo(() => createBrowserSupabaseClient(), []);
-  const [rangeKey, setRangeKey] = useState("30");
+function ServicesInner() {
+  const supabase = createBrowserClient();
   const [rows, setRows] = useState<Row[]>([]);
+  const [range, setRange] = useState(ranges[1]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
+      const { data: u } = await supabase.auth.getUser();
+      const uid = u.user?.id;
+      if (!uid) {
+        setRows([]);
+        setLoading(false);
+        return;
+      }
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('business_id')
+        .eq('id', uid)
+        .maybeSingle();
+      const biz = prof?.business_id;
+      if (!biz) {
+        setRows([]);
+        setLoading(false);
+        return;
+      }
+
       const since = new Date();
-      const r = ranges.find(r => r.k === rangeKey) ?? ranges[1];
-      since.setDate(since.getDate() - r.days);
+      since.setDate(since.getDate() - range.days);
 
       const { data } = await supabase
-        .from("appointments")
-        .select("normalized_service,status,price_usd")
-        .gte("start_ts", since.toISOString())
-        .order("start_ts", { ascending: false })
-        .limit(5000);
+        .from('appointments')
+        .select('id,business_id,status,normalized_service,service_raw,start_ts,price_usd')
+        .eq('business_id', biz)
+        .gte('start_ts', since.toISOString())
+        .order('start_ts', { ascending: true });
 
-      setRows((data ?? []) as Row[]);
+      setRows(data ?? []);
       setLoading(false);
     })();
-  }, [rangeKey, supabase]);
+  }, [supabase, range]);
 
-  const agg = rows
-    .filter(r => r.status !== "Cancelled")
-    .reduce((acc, r) => {
-      const key = r.normalized_service ?? "UNCLASSIFIED";
-      const price = r.price_usd ? parseFloat(r.price_usd) : 0;
-      acc[key] = acc[key] || { bookings: 0, revenue: 0 };
-      acc[key].bookings += 1;
-      acc[key].revenue += price;
-      return acc;
-    }, {} as Record<string, { bookings: number; revenue: number }>);
+  // Aggregate by normalized_service, excluding Cancelled
+  const groups = useMemo(() => {
+    const m = new Map<string, { service: string; bookings: number; revenue: number }>();
+    for (const r of rows) {
+      if (r.status === 'Cancelled') continue;
+      const key = r.normalized_service ?? r.service_raw ?? 'Unknown';
+      const price = priceFor(r.normalized_service, r.price_usd) ?? 0;
+      if (!m.has(key)) m.set(key, { service: key, bookings: 0, revenue: 0 });
+      const g = m.get(key)!;
+      g.bookings += 1;
+      g.revenue += price;
+    }
+    return Array.from(m.values()).sort((a, b) => b.revenue - a.revenue);
+  }, [rows]);
 
-  const entries = Object.entries(agg);
+  const top = groups[0];
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Services</h1>
+        <div className="text-[#dcdfe6] text-xl">Services</div>
         <select
-          value={rangeKey}
-          onChange={e => setRangeKey(e.target.value)}
-          className="rounded-xl bg-cx-surface border border-cx-border px-3 py-2 outline-none"
+          value={range.days}
+          onChange={(e) => setRange(ranges.find((r) => r.days === Number(e.target.value)) || ranges[1])}
+          className="bg-[#0f1115] border border-[#22262e] text-[#dcdfe6] rounded-xl px-3 py-2"
         >
-          {ranges.map(r => <option key={r.k} value={r.k}>{`${r.k} days`}</option>)}
+          {ranges.map((r) => (
+            <option key={r.days} value={r.days}>
+              {r.label}
+            </option>
+          ))}
         </select>
       </div>
 
-      <div className="rounded-2xl bg-cx-surface border border-cx-border shadow-xl overflow-x-auto">
+      {/* Highlights */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
+          <div className="text-[#9aa2ad] text-sm">Top revenue service</div>
+          <div className="text-[#dcdfe6] text-2xl mt-1">{top?.service ?? '-'}</div>
+          <div className="text-[#9aa2ad] mt-1">Revenue: {fmtUSD(top?.revenue ?? 0)}</div>
+        </div>
+        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
+          <div className="text-[#9aa2ad] text-sm">Total revenue</div>
+          <div className="text-[#dcdfe6] text-2xl mt-1">
+            {fmtUSD(groups.reduce((a, g) => a + g.revenue, 0))}
+          </div>
+        </div>
+        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
+          <div className="text-[#9aa2ad] text-sm">Total bookings</div>
+          <div className="text-[#dcdfe6] text-2xl mt-1">
+            {groups.reduce((a, g) => a + g.bookings, 0)}
+          </div>
+        </div>
+      </div>
+
+      {/* Revenue by Service chart */}
+      <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-4">
+        <div className="text-[#dcdfe6] mb-2">Revenue by service</div>
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={groups}>
+              <CartesianGrid stroke="#22262e" strokeDasharray="3 3" />
+              <XAxis dataKey="service" stroke="#9aa2ad" />
+              <YAxis stroke="#9aa2ad" />
+              <Tooltip
+                formatter={(v: number) => fmtUSD(v)}
+                contentStyle={{ background: '#0f1115', border: '1px solid #22262e', color: '#dcdfe6' }}
+              />
+              <Bar dataKey="revenue" fill="#3b82f6" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="rounded-2xl shadow-lg bg-[#0f1115] border border-[#22262e] overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="text-cx-muted">
-            <tr className="[&_th]:px-5 [&_th]:py-3 text-left">
-              <th>Service</th><th>Bookings</th><th>Revenue</th>
+          <thead className="text-[#9aa2ad] bg-[#0a0a0b]">
+            <tr>
+              <th className="text-left px-4 py-3">Service</th>
+              <th className="text-left px-4 py-3">Bookings</th>
+              <th className="text-left px-4 py-3">Revenue</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="text-[#dcdfe6]">
             {loading ? (
-              <tr><td className="px-5 py-4 text-cx-muted" colSpan={3}>Loading…</td></tr>
-            ) : entries.length === 0 ? (
-              <tr><td className="px-5 py-6 text-cx-muted" colSpan={3}>No data in range.</td></tr>
-            ) : entries.map(([svc, v]) => (
-              <tr key={svc} className="border-t border-cx-border/70">
-                <td className="px-5 py-3">{svc}</td>
-                <td className="px-5 py-3">{v.bookings}</td>
-                <td className="px-5 py-3">${v.revenue.toFixed(2)}</td>
+              <tr>
+                <td colSpan={3} className="px-4 py-6 text-center text-[#9aa2ad]">
+                  Loading…
+                </td>
               </tr>
-            ))}
+            ) : groups.length === 0 ? (
+              <tr>
+                <td colSpan={3} className="px-4 py-6 text-center text-[#9aa2ad]">
+                  No data.
+                </td>
+              </tr>
+            ) : (
+              groups.map((g) => (
+                <tr key={g.service} className="border-t border-[#22262e]/60">
+                  <td className="px-4 py-3">{g.service}</td>
+                  <td className="px-4 py-3">{g.bookings}</td>
+                  <td className="px-4 py-3">{fmtUSD(g.revenue)}</td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-6 text-[#9aa2ad]">Loading…</div>}>
+      <ServicesInner />
+    </Suspense>
   );
 }
