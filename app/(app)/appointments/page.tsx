@@ -1,136 +1,164 @@
 'use client';
 
-import { useEffect, useMemo, useState, Suspense } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { createBrowserClient } from '@/lib/supabaseBrowser';
+import StatusBadge, { ApptStatus } from '@/components/StatusBadge';
+import { When } from '@/components/When';
 import { priceFor, fmtUSD } from '@/lib/pricing';
 
 type Row = {
   id: number;
   business_id: string;
-  booking_id: string | null;
-  status: 'Booked' | 'Rescheduled' | 'Cancelled' | 'Inquiry';
+  booking_id: string;
+  status: ApptStatus | string;
   source: string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
   service_raw: string | null;
-  normalized_service: string | null;
-  start_ts: string; // ISO
+  normalized_service: 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60' | null;
+  start_ts: string;   // timestamptz (ISO)
   end_ts: string | null;
-  price_usd: number | null;
+  price_usd: string | number | null;
+  updated_at?: string | null; // optional (if you added audit columns)
 };
 
-const ranges = [
-  { label: '7 days', days: 7 },
-  { label: '30 days', days: 30 },
-  { label: '90 days', days: 90 },
-  { label: 'Future', days: 3650 },
-];
-
-function prettyPhone(v?: string | null) {
-  if (!v) return '-';
-  // assume already E.164, just display
-  return v.replace('+1', '+1 ').trim();
+function fmtDate(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric', year: 'numeric' });
+}
+function fmtTime(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+function prettyPhone(p?: string | null) {
+  if (!p) return '-';
+  try {
+    // simple pretty: +1 864 477-0924
+    const clean = p.replace(/[^\d+]/g, '');
+    if (clean.startsWith('+1') && clean.length === 12) {
+      return `+1 (${clean.slice(2,5)}) ${clean.slice(5,8)}-${clean.slice(8)}`;
+    }
+    return clean;
+  } catch {
+    return p;
+  }
 }
 
-function formatDate(ts: string) {
-  const d = new Date(ts);
-  return d.toLocaleDateString();
-}
-function formatTime(ts: string) {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
+function Inner() {
+  const supabase = useMemo(() => createBrowserClient(), []);
+  const params = useSearchParams();
 
-function AppointmentsInner() {
-  const supabase = createBrowserClient();
   const [rows, setRows] = useState<Row[]>([]);
-  const [search, setSearch] = useState('');
-  const [range, setRange] = useState(ranges[1]); // default 30 days
   const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
+  const [range, setRange] = useState<'7' | '30' | '90' | 'Future'>('30');
+  const [showCancelled, setShowCancelled] = useState(false);
+
+  // Resolve business id: ?biz= overrides; otherwise read the current user's profile.business_id
+  const [biz, setBiz] = useState<string | null>(null);
 
   useEffect(() => {
+    const bizParam = params.get('biz');
+    if (bizParam) {
+      setBiz(bizParam);
+      return;
+    }
+
     (async () => {
-      setLoading(true);
       const { data: u } = await supabase.auth.getUser();
       const uid = u.user?.id;
       if (!uid) {
-        setRows([]);
-        setLoading(false);
+        // no auth (mock). Keep biz as null; expect server to be publicly readable or demo mode.
+        setBiz(null);
         return;
       }
-      const { data: prof } = await supabase
+      const { data } = await supabase
         .from('profiles')
         .select('business_id')
         .eq('id', uid)
         .maybeSingle();
+      setBiz((data?.business_id as string) ?? null);
+    })();
+  }, [params, supabase]);
 
-      const biz = prof?.business_id;
-      if (!biz) {
-        setRows([]);
-        setLoading(false);
-        return;
-      }
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
 
-      const since = new Date();
-      since.setDate(since.getDate() - range.days);
-
-      let q = supabase
+      let query = supabase
         .from('appointments')
         .select(
-          'id,business_id,booking_id,status,source,caller_name,caller_phone_e164,service_raw,normalized_service,start_ts,end_ts,price_usd'
+          'id,business_id,booking_id,status,source,caller_name,caller_phone_e164,service_raw,normalized_service,start_ts,end_ts,price_usd,updated_at'
         )
-        .eq('business_id', biz)
-        .gte('start_ts', since.toISOString())
         .order('start_ts', { ascending: true });
 
-      if (search.trim()) {
-        const s = `%${search.trim()}%`;
-        q = q.or(
-          `caller_name.ilike.${s},caller_phone_e164.ilike.${s},service_raw.ilike.${s},normalized_service.ilike.${s}`
-        );
+      // Scope by business if present (RLS enforces this in prod anyway)
+      if (biz) query = query.eq('business_id', biz);
+
+      // Date range filter
+      const now = new Date();
+      if (range !== 'Future') {
+        const days = range === '7' ? 7 : range === '30' ? 30 : 90;
+        const from = new Date(now.getTime() - days * 864e5).toISOString();
+        query = query.gte('start_ts', from).lte('start_ts', new Date().toISOString());
+      } else {
+        query = query.gte('start_ts', now.toISOString());
       }
 
-      const { data } = await q;
-      setRows(data ?? []);
+      const { data, error } = await query;
+      if (!error && data) setRows(data as Row[]);
       setLoading(false);
     })();
-  }, [supabase, range, search]);
+  }, [supabase, biz, range]);
 
-  const computed = useMemo(() => {
-    return rows.map((r) => ({
-      ...r,
-      derived_price: priceFor(r.normalized_service, r.price_usd),
-    }));
-  }, [rows]);
+  // Client-side filters
+  const visible = rows
+    .filter((r) => (showCancelled ? true : r.status !== 'Cancelled'))
+    .filter((r) => {
+      if (!q) return true;
+      const hay = `${r.caller_name ?? ''} ${r.caller_phone_e164 ?? ''} ${r.service_raw ?? ''} ${r.normalized_service ?? ''}`.toLowerCase();
+      return hay.includes(q.toLowerCase());
+    });
 
   return (
     <div className="p-6">
-      <div className="mb-4 flex items-center gap-3">
+      <div className="text-[#dcdfe6] text-xl mb-4">Appointments</div>
+
+      {/* Controls */}
+      <div className="mb-4 flex items-center justify-between gap-3">
         <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
           placeholder="Search name / phone / service"
-          className="bg-[#0f1115] border border-[#22262e] text-[#dcdfe6] placeholder-[#9aa2ad] rounded-xl px-3 py-2 w-72"
+          className="w-full max-w-md bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6] placeholder-[#9aa2ad]"
         />
-        <select
-          value={range.days}
-          onChange={(e) => {
-            const d = Number(e.target.value);
-            setRange(ranges.find((r) => r.days === d) || ranges[1]);
-          }}
-          className="bg-[#0f1115] border border-[#22262e] text-[#dcdfe6] rounded-xl px-3 py-2"
-        >
-          {ranges.map((r) => (
-            <option key={r.days} value={r.days}>
-              {r.label}
-            </option>
+        <div className="flex items-center gap-2">
+          {(['7', '30', '90', 'Future'] as const).map((r) => (
+            <button
+              key={r}
+              onClick={() => setRange(r)}
+              className={`px-3 py-1.5 rounded-xl border ${range === r ? 'bg-[#3b82f6] border-[#3b82f6] text-white' : 'bg-[#0f1115] border-[#22262e] text-[#dcdfe6]'}`}
+            >
+              {r === 'Future' ? 'Future' : `${r} days`}
+            </button>
           ))}
-        </select>
+          <label className="ml-3 inline-flex items-center gap-2 text-sm text-[#9aa2ad]">
+            <input
+              type="checkbox"
+              className="accent-[#3b82f6]"
+              checked={showCancelled}
+              onChange={(e) => setShowCancelled(e.target.checked)}
+            />
+            Include cancelled
+          </label>
+        </div>
       </div>
 
-      <div className="rounded-2xl shadow-lg bg-[#0f1115] border border-[#22262e] overflow-hidden">
+      {/* Table */}
+      <div className="rounded-2xl overflow-hidden border border-[#22262e] bg-[#0f1115]">
         <table className="w-full text-sm">
-          <thead className="text-[#9aa2ad] bg-[#0a0a0b]">
+          <thead className="text-[#9aa2ad] bg-[#0f1115]">
             <tr>
               <th className="text-left px-4 py-3">Date</th>
               <th className="text-left px-4 py-3">Time</th>
@@ -139,35 +167,36 @@ function AppointmentsInner() {
               <th className="text-left px-4 py-3">Phone</th>
               <th className="text-left px-4 py-3">Source</th>
               <th className="text-left px-4 py-3">Status</th>
-              <th className="text-left px-4 py-3">Price</th>
+              <th className="text-right px-4 py-3">Price</th>
             </tr>
           </thead>
-          <tbody className="text-[#dcdfe6]">
+          <tbody>
             {loading ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-[#9aa2ad]">
-                  Loading…
-                </td>
-              </tr>
-            ) : computed.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-[#9aa2ad]">
-                  No appointments.
-                </td>
-              </tr>
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">Loading…</td></tr>
+            ) : visible.length === 0 ? (
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">No appointments</td></tr>
             ) : (
-              computed.map((r) => (
-                <tr key={r.id} className="border-t border-[#22262e]/60">
-                  <td className="px-4 py-3">{formatDate(r.start_ts)}</td>
-                  <td className="px-4 py-3">{formatTime(r.start_ts)}</td>
-                  <td className="px-4 py-3">{r.normalized_service ?? r.service_raw ?? '-'}</td>
-                  <td className="px-4 py-3">{r.caller_name ?? '-'}</td>
-                  <td className="px-4 py-3">{prettyPhone(r.caller_phone_e164)}</td>
-                  <td className="px-4 py-3">{r.source ?? '-'}</td>
-                  <td className="px-4 py-3">{r.status}</td>
-                  <td className="px-4 py-3">{fmtUSD(r.derived_price ?? null)}</td>
-                </tr>
-              ))
+              visible.map((r) => {
+                const price = priceFor(r.normalized_service, r.price_usd);
+                return (
+                  <tr key={r.id} className={`border-t border-[#22262e] ${r.status === 'Cancelled' ? 'opacity-60' : ''}`}>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">
+                      {fmtTime(r.start_ts)}
+                      {r.status === 'Rescheduled' && (
+                        <span className="ml-2 text-xs text-[#f5c451]">rescheduled</span>
+                      )}
+                      <When ts={r.updated_at} />
+                    </td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{r.normalized_service || r.service_raw || '-'}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{r.caller_name || '-'}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{prettyPhone(r.caller_phone_e164)}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{r.source || 'Retell'}</td>
+                    <td className="px-4 py-3"><StatusBadge status={r.status as ApptStatus} /></td>
+                    <td className="px-4 py-3 text-right text-[#dcdfe6]">{fmtUSD(price)}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -179,7 +208,7 @@ function AppointmentsInner() {
 export default function Page() {
   return (
     <Suspense fallback={<div className="p-6 text-[#9aa2ad]">Loading…</div>}>
-      <AppointmentsInner />
+      <Inner />
     </Suspense>
   );
 }
