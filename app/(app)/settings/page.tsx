@@ -16,7 +16,11 @@ export default function SettingsPage() {
       const uid = userRes?.user?.id;
       setEmail(userRes?.user?.email ?? "(not signed in)");
       if (!uid) return;
-      const { data } = await supabase.from("profiles").select("business_id").eq("id", uid).maybeSingle();
+      const { data } = await supabase
+        .from("profiles")
+        .select("business_id")
+        .eq("id", uid)
+        .maybeSingle();
       if (data?.business_id) setBusinessId(data.business_id);
     })();
   }, [supabase]);
@@ -25,11 +29,13 @@ export default function SettingsPage() {
     setSaving(true); setMsg("");
     const { data: userRes } = await supabase.auth.getUser();
     const uid = userRes?.user?.id;
-    if (!uid) { setMsg("You must sign in with Supabase Auth to save."); setSaving(false); return; }
+    if (!uid) { setMsg("Sign in with Supabase Auth to save."); setSaving(false); return; }
 
-    const { error } = await supabase.from("profiles").upsert({ id: uid, business_id: businessId });
-    if (error) setMsg(error.message);
-    else setMsg("Saved.");
+    const { error } = await supabase
+      .from("profiles")
+      .upsert({ id: uid, business_id: businessId });
+
+    setMsg(error ? error.message : "Saved.");
     setSaving(false);
   }
 
@@ -52,7 +58,7 @@ export default function SettingsPage() {
             className="w-full rounded-xl bg-cx-bg px-4 py-3 outline-none border border-cx-border text-cx-text placeholder:text-cx-muted"
           />
           <p className="text-xs text-cx-muted mt-2">
-            This links your user to a business. All dashboard data is scoped by this value.
+            Links your user to a business. All dashboard data is scoped by this value (via RLS).
           </p>
         </div>
 
