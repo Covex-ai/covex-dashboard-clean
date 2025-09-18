@@ -3,10 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
 
-/** Table types (minimal, enough for strict TS) */
-type ProfileRow = { business_id: string | null };                // for SELECT
-type ProfileUpsert = { id: string; business_id: string | null }; // for UPSERT
-
 export default function SettingsPage() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
   const [email, setEmail] = useState<string>("-");
@@ -16,19 +12,23 @@ export default function SettingsPage() {
 
   useEffect(() => {
     (async () => {
+      // Read current auth user (mock for now unless you wire Supabase Auth)
       const { data: userRes } = await supabase.auth.getUser();
       const uid = userRes?.user?.id ?? null;
       setEmail(userRes?.user?.email ?? "(not signed in)");
       if (!uid) return;
 
-      // Typed SELECT to avoid `never` from maybeSingle()
+      // Select profile without generics; cast the result to a known shape
       const { data, error } = await supabase
-        .from<ProfileRow>("profiles")
+        .from("profiles")
         .select("business_id")
         .eq("id", uid)
         .maybeSingle();
 
-      if (!error && data?.business_id) setBusinessId(data.business_id);
+      if (!error) {
+        const profile = data as { business_id: string | null } | null;
+        if (profile?.business_id) setBusinessId(profile.business_id);
+      }
     })();
   }, [supabase]);
 
@@ -44,11 +44,11 @@ export default function SettingsPage() {
       return;
     }
 
-    // Typed UPSERT so TS knows the payload shape
-    const payload: ProfileUpsert = { id: uid, business_id: businessId || null };
+    // Upsert without generics; cast to any to bypass Supabase generic inference
+    const payload = { id: uid, business_id: businessId || null };
     const { error } = await supabase
-      .from<ProfileUpsert>("profiles")
-      .upsert(payload);
+      .from("profiles" as any)
+      .upsert(payload as any);
 
     setMsg(error ? error.message : "Saved.");
     setSaving(false);
