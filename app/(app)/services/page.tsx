@@ -27,12 +27,14 @@ export default function ServicesPage() {
       const since = new Date();
       const r = ranges.find(r => r.k === rangeKey) ?? ranges[1];
       since.setDate(since.getDate() - r.days);
+
       const { data } = await supabase
         .from("appointments")
         .select("normalized_service,status,price_usd")
         .gte("start_ts", since.toISOString())
         .order("start_ts", { ascending: false })
-        .limit(2000);
+        .limit(5000);
+
       setRows((data ?? []) as Row[]);
       setLoading(false);
     })();
