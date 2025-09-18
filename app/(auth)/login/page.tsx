@@ -1,50 +1,44 @@
-"use client";
-import Image from "next/image";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { createBrowserSupabaseClient } from "@/lib/supabaseBrowser";
+'use client';
+
+import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 
 export default function LoginPage() {
   const router = useRouter();
-  const supabase = createBrowserSupabaseClient();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [msg, setMsg] = useState("");
 
-  async function handleSignIn() {
-    setMsg("");
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) { setMsg(error.message); return; }
-    router.push("/dashboard");
+  function mockSignIn() {
+    // Mock auth for now: just route into the app.
+    router.push('/dashboard');
   }
 
   return (
-    <div className="min-h-screen grid place-items-center">
-      <div className="w-full max-w-md rounded-2xl bg-cx-surface p-8 shadow-xl border border-cx-border">
+    <div className="min-h-screen bg-[#0a0a0b] flex items-center justify-center px-4">
+      <div className="w-full max-w-md rounded-2xl bg-[#0f1115] border border-[#22262e] shadow-xl p-6">
         <div className="flex items-center gap-3 mb-6">
           <Image src="/covex.svg" alt="Covex" width={28} height={28} />
-          <span className="text-lg font-semibold tracking-wide text-cx-text">Covex</span>
+          <div className="text-[#dcdfe6] text-xl">Covex</div>
         </div>
-
-        <h1 className="text-2xl font-semibold mb-2 text-cx-text">Sign in</h1>
-        <p className="text-sm text-cx-muted mb-6">Accounts are provisioned by Covex.</p>
 
         <div className="space-y-3">
           <input
-            type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)}
-            className="w-full rounded-xl bg-cx-bg px-4 py-3 outline-none border border-cx-border text-cx-text placeholder:text-cx-muted"
+            className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6] placeholder-[#9aa2ad]"
+            placeholder="Email"
+            type="email"
           />
           <input
-            type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)}
-            className="w-full rounded-xl bg-cx-bg px-4 py-3 outline-none border border-cx-border text-cx-text placeholder:text-cx-muted"
+            className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6] placeholder-[#9aa2ad]"
+            placeholder="Password"
+            type="password"
           />
           <button
-            onClick={handleSignIn}
-            className="w-full rounded-xl px-4 py-3 bg-cx-accent/90 hover:bg-cx-accent transition text-white font-medium"
+            onClick={mockSignIn}
+            className="w-full bg-[#3b82f6] hover:opacity-90 text-white rounded-xl px-4 py-2"
           >
-            Sign in
+            Continue
           </button>
-          {msg && <p className="text-sm text-cx-muted">{msg}</p>}
+          <div className="text-xs text-[#9aa2ad]">
+            Accounts are created by us — no public signups.
+          </div>
         </div>
       </div>
     </div>
