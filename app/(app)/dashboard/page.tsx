@@ -24,7 +24,7 @@ import {
 
 type Row = {
   id: number;
-  start_ts: string; // ISO string
+  start_ts: string; // ISO
   service_raw: string | null;
   normalized_service: NormalizedService | null;
   name: string | null;
@@ -34,7 +34,6 @@ type Row = {
 };
 
 type RangeKey = 7 | 30 | 90;
-
 const RANGE_OPTIONS: RangeKey[] = [7, 30, 90];
 
 function RangePills({
@@ -100,7 +99,6 @@ function Metric({
 function useBusinessId() {
   const [bid, setBid] = useState<string | null>(null);
   useEffect(() => {
-    // Mirror your Settings page behavior (localStorage)
     const v =
       window.localStorage.getItem("business_uuid") ??
       window.localStorage.getItem("covex_business_uuid");
@@ -117,12 +115,11 @@ export default function DashboardPage() {
   const [rowsAll, setRowsAll] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Load the last 90 days and filter client-side for 7/30
+  // Load last 90d (we filter locally for 7/30)
   useEffect(() => {
     if (!businessId) return;
-    let isCancelled = false;
-
-    async function load() {
+    let cancelled = false;
+    (async () => {
       setLoading(true);
       try {
         const since = new Date();
@@ -137,21 +134,19 @@ export default function DashboardPage() {
           .order("start_ts", { ascending: true });
 
         if (error) throw error;
-        if (!isCancelled) setRowsAll((data ?? []) as Row[]);
+        if (!cancelled) setRowsAll((data ?? []) as Row[]);
       } catch (e) {
         console.error(e);
-        if (!isCancelled) setRowsAll([]);
+        if (!cancelled) setRowsAll([]);
       } finally {
-        !isCancelled && setLoading(false);
+        !cancelled && setLoading(false);
       }
-    }
-    load();
+    })();
     return () => {
-      isCancelled = true;
+      cancelled = true;
     };
   }, [businessId, supabase]);
 
-  // Filter by chosen range
   const rows = useMemo(() => {
     const since = new Date();
     since.setDate(since.getDate() - range);
@@ -176,23 +171,20 @@ export default function DashboardPage() {
     return rows
       .filter((r) => r.status !== "Cancelled")
       .reduce((sum, r) => {
-        const normalized =
-          r.normalized_service ?? normalizeService(r.service_raw ?? "");
+        const normalized: NormalizedService = (
+          r.normalized_service ?? normalizeService(r.service_raw ?? "")
+        ) as NormalizedService;
         return sum + priceFor(normalized, toNumber(r.price_usd));
       }, 0);
   }, [rows]);
 
-  // Bookings per day (line + dots)
+  // Bookings per day
   const bookingsByDay = useMemo(() => {
-    // Build a day bucket for each day in range to keep the chart continuous
     const start = new Date();
     start.setDate(start.getDate() - range + 1);
     start.setHours(0, 0, 0, 0);
 
-    const days: { day: string; count: number }[] = [];
-    const fmt = (d: Date) =>
-      `${d.getMonth() + 1}/${d.getDate()}` as string;
-
+    const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`;
     const map = new Map<string, number>();
     for (const r of rows) {
       const d = new Date(r.start_ts);
@@ -200,6 +192,7 @@ export default function DashboardPage() {
       map.set(key, (map.get(key) ?? 0) + 1);
     }
 
+    const days: { day: string; count: number }[] = [];
     const iter = new Date(start);
     for (let i = 0; i < range; i++) {
       const key = fmt(iter);
@@ -209,13 +202,14 @@ export default function DashboardPage() {
     return days;
   }, [rows, range]);
 
-  // Revenue by service (bars)
+  // Revenue by service
   const revenueByService = useMemo(() => {
     const sums = new Map<NormalizedService, number>();
     for (const r of rows) {
       if (r.status === "Cancelled") continue;
-      const s =
-        r.normalized_service ?? normalizeService(r.service_raw ?? "");
+      const s: NormalizedService = (
+        r.normalized_service ?? normalizeService(r.service_raw ?? "")
+      ) as NormalizedService; // <- ensure Map key type is satisfied
       const v = priceFor(s, toNumber(r.price_usd));
       sums.set(s, (sums.get(s) ?? 0) + v);
     }
@@ -223,12 +217,11 @@ export default function DashboardPage() {
       service: serviceLabelFor(s, null),
       revenue: v,
     }));
-    // Always show stable order by label
     out.sort((a, b) => a.service.localeCompare(b.service));
     return out;
   }, [rows]);
 
-  // Shared tooltip (dark, readable)
+  // Tooltip styles (dark)
   const tooltipStyle =
     "rounded-xl border border-cx-border bg-[#0b0b0c] px-3 py-2 shadow-xl";
   const tooltipLabel = "text-[13px] text-white/80";
@@ -383,9 +376,12 @@ export default function DashboardPage() {
                         hour: "numeric",
                         minute: "2-digit",
                       });
-                      const normalized =
+
+                      const normalized: NormalizedService = (
                         r.normalized_service ??
-                        normalizeService(r.service_raw ?? "");
+                        normalizeService(r.service_raw ?? "")
+                      ) as NormalizedService;
+
                       const price = priceFor(normalized, toNumber(r.price_usd));
                       const label = serviceLabelFor(
                         normalized,
