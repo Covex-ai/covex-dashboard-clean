@@ -1,159 +1,116 @@
-/* =========================================================
-   Covex Dashboard — globals.css (full file)
-   ========================================================= */
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ---------- Theme tokens (dark) ---------- */
+/* ===== Brand theme (matches covex.ai landing) ===== */
 :root {
-  /* Surfaces */
-  --cx-bg: #0b0e13;       /* page background */
-  --cx-surface: #0f1116;  /* cards/panels */
-  --cx-border: #22262e;   /* subtle borders */
-
-  /* Text */
-  --cx-text: #e7e9ee;     /* primary text */
-  --cx-muted: #a7adbb;    /* secondary text */
-
-  /* Accent (blue glow) */
-  --cx-accent: #0ea5e9;
+  --cx-bg: #0b0c0f;            /* page background (pure dark) */
+  --cx-surface: #12141a;       /* cards / panels */
+  --cx-border: #1f232b;        /* subtle borders */
+  --cx-text: #f2f5f9;          /* primary text */
+  --cx-muted: #a7b0bf;         /* secondary text */
+  --cx-accent: #2ad1ff;        /* cyan accent (dots/line) */
+  --cx-accent-soft: rgba(42, 209, 255, 0.15);
+  --cx-success: #14c184;       /* “Booked” pill etc. */
+  --cx-warning: #efb417;
+  --cx-danger: #ef4444;
 }
 
-/* Apply base colors to html/body */
-html,
-body {
-  background-color: var(--cx-bg);
+/* Global canvas */
+html, body {
+  background: var(--cx-bg);
   color: var(--cx-text);
-  min-height: 100%;
 }
 
-/* ---------- Utility classes bound to tokens ---------- */
-/* (So you can use Tailwind-like class names in JSX) */
+/* Tailwind helpers */
 @layer utilities {
-  .bg-cx-bg { background-color: var(--cx-bg) !important; }
-  .bg-cx-surface { background-color: var(--cx-surface) !important; }
-
-  .text-cx-text { color: var(--cx-text) !important; }
-  .text-cx-muted { color: var(--cx-muted) !important; }
-
-  .border-cx-border { border-color: var(--cx-border) !important; }
+  .bg-cx-bg { background-color: var(--cx-bg); }
+  .bg-cx-surface { background-color: var(--cx-surface); }
+  .border-cx-border { border-color: var(--cx-border); }
+  .text-cx-text { color: var(--cx-text); }
+  .text-cx-muted { color: var(--cx-muted); }
+  .accent { color: var(--cx-accent); }
+  .shadow-cx {
+    /* very soft elevated card look */
+    box-shadow: 0 0 0 1px var(--cx-border), 0 8px 24px rgba(0,0,0,.35);
+  }
 }
 
-/* ---------- Focus rings (keyboard) ---------- */
-:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--cx-accent) 70%, transparent);
-  outline-offset: 2px;
-  border-radius: 8px;
+/* Card styling */
+.card {
+  @apply bg-cx-surface border border-cx-border rounded-2xl shadow-cx;
 }
 
-/* ---------- Scrollbar (WebKit) ---------- */
-*::-webkit-scrollbar {
-  height: 10px;
-  width: 10px;
+/* Small stat tiles */
+.stat {
+  @apply card p-5 flex flex-col gap-2;
 }
-*::-webkit-scrollbar-track {
-  background: transparent;
+.stat-title {
+  @apply text-sm text-cx-muted;
 }
-*::-webkit-scrollbar-thumb {
-  background: #1a1e26;
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-*::-webkit-scrollbar-thumb:hover {
-  background: #222733;
+.stat-value {
+  @apply text-2xl font-semibold;
 }
 
-/* =========================================================
-   Charts — Recharts dark mode polish
-   ========================================================= */
+/* Recharts theming */
+.recharts-cartesian-grid line {
+  stroke: #232833;
+}
+.recharts-xAxis .recharts-cartesian-axis-tick text,
+.recharts-yAxis .recharts-cartesian-axis-tick text {
+  fill: var(--cx-muted);
+}
+.recharts-layer.recharts-line-dots circle {
+  stroke: var(--cx-accent);
+  fill: #0b0c0f; /* on-brand black fill, cyan ring */
+  stroke-width: 2;
+}
 .recharts-default-tooltip {
   background: var(--cx-surface) !important;
   border: 1px solid var(--cx-border) !important;
   color: var(--cx-text) !important;
-  border-radius: 10px !important;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5) !important;
-}
-.recharts-tooltip-label { color: #e5f5ff !important; } /* accent label */
-.recharts-tooltip-item { color: var(--cx-text) !important; }
-
-.recharts-cartesian-grid-horizontal line,
-.recharts-cartesian-grid-vertical line {
-  stroke: #1a1e26 !important; /* subtle grid */
-}
-.recharts-cartesian-axis-tick-value tspan {
-  fill: var(--cx-muted) !important;
+  border-radius: 12px !important;
 }
 
-/* Line + dots styling for "Bookings per day" */
-.recharts-line path {
-  /* keep default stroke from component; we add glow on active dots */
+/* Segmented control (range switch) */
+.segmented {
+  @apply inline-flex items-center p-1 rounded-xl border border-cx-border bg-cx-surface shadow-cx;
 }
-.recharts-line-dot circle { stroke: var(--cx-accent) !important; }
-.recharts-line-dot.active circle {
-  stroke-width: 2 !important;
-  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--cx-accent) 60%, transparent));
+.segmented button {
+  @apply px-3 py-1.5 text-sm rounded-lg transition-colors text-cx-muted;
 }
-
-/* =========================================================
-   Radix / shadcn Select — dark popover so Range is readable
-   ========================================================= */
-/* Content container */
-[data-radix-select-content],
-[data-radix-popper-content-wrapper] {
-  background: var(--cx-surface) !important;
-  border: 1px solid var(--cx-border) !important;
-  color: var(--cx-text) !important;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55) !important;
-  border-radius: 10px !important;
+.segmented button[aria-pressed="true"] {
+  @apply bg-cx-bg text-cx-text;
+  box-shadow: inset 0 0 0 1px var(--cx-border);
 }
 
-/* Inner viewport & items */
-[data-radix-select-viewport] { padding: 4px !important; }
-[data-radix-select-item] {
-  color: var(--cx-text) !important;
-  border-radius: 8px !important;
-  padding: 6px 8px;
+/* Table look */
+.table {
+  @apply w-full text-sm;
 }
-[data-radix-select-item][data-highlighted],
-[data-radix-select-item][data-state="checked"] {
-  background: color-mix(in srgb, var(--cx-accent) 15%, transparent) !important;
-  color: #e5f5ff !important;
+.table th {
+  @apply text-left font-medium text-cx-muted px-4 py-3;
+}
+.table td {
+  @apply px-4 py-3 border-t border-cx-border;
 }
 
-/* Trigger button (if you use shadcn SelectTrigger) */
-button[data-state][data-placeholder],
-[data-radix-select-trigger] {
-  background: var(--cx-surface);
-  border-color: var(--cx-border);
+/* Status pills */
+.pill {
+  @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium;
+}
+.pill--ok { background: rgba(20,193,132,.15); color: #16e3a0; border: 1px solid rgba(20,193,132,.25); }
+.pill--warn { background: rgba(239,180,23,.12); color: #ffd66e; border: 1px solid rgba(239,180,23,.25); }
+.pill--bad { background: rgba(239,68,68,.12); color: #ff8f8f; border: 1px solid rgba(239,68,68,.25); }
+
+/* Brand header wordmark area (sidebar) */
+.brand-wordmark {
+  letter-spacing: .24em;
+  font-weight: 700;
+}
+
+/* Dropdown fix (only for the tiny native selects we still use) */
+select, option {
+  background-color: var(--cx-surface);
   color: var(--cx-text);
-}
-
-/* =========================================================
-   Chips / Badges for statuses
-   ========================================================= */
-.badge {
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  line-height: 1;
-  border: 1px solid var(--cx-border);
-  background: var(--cx-surface);
-  color: var(--cx-muted);
-}
-.badge.success { color: #baf7c8; border-color: rgba(34,197,94,.4); }
-.badge.warning { color: #ffe89a; border-color: rgba(234,179,8,.4); }
-
-/* =========================================================
-   Card + table subtle helpers (optional, matches theme)
-   ========================================================= */
-.card {
-  background: var(--cx-surface);
-  border: 1px solid var(--cx-border);
-  border-radius: 12px;
-}
-.table-row {
-  border-top: 1px solid var(--cx-border);
 }
