@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import Segmented from "@/components/Segmented";
-import { ChartTooltip } from "@/components/ChartTooltip";
+import RangePills from "@/components/RangePills";
+import {
+  priceFor,
+  normalizeService,
+  serviceLabelFor,
+} from "@/lib/pricing";
 import {
   ResponsiveContainer,
   BarChart,
@@ -11,186 +15,147 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
+  Tooltip as RTooltip,
 } from "recharts";
-import { priceFor, serviceLabelFor } from "@/lib/pricing";
 
 type Row = {
-  id: number;
+  id: string;
   start_ts: string;
   status: "Booked" | "Rescheduled" | "Cancelled";
-  normalized_service: string | null;
   service_raw: string | null;
-  price_usd: string | number | null;
+  price_usd: number | string | null;
+  normalized_service?: string | null;
 };
 
-const toNumber = (v: string | number | null | undefined): number =>
-  typeof v === "number" ? v : v ? Number(v) : 0;
-
-export default function ServicesPage() {
+function Tip({ label, payload }: { label?: string; payload?: any[] }) {
+  const val = payload?.[0]?.value ?? 0;
   return (
-    <Suspense>
-      <Content />
-    </Suspense>
+    <div className="c-tip">
+      <div style={{ opacity: 0.7 }}>{label}</div>
+      <div style={{ marginTop: 2, fontWeight: 600 }}>{val}</div>
+    </div>
   );
 }
 
-function Content() {
+export default function ServicesPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [rows, setRows] = useState<Row[]>([]);
-  const [range, setRange] = useState<"7" | "30" | "90">("30");
+  const [range, setRange] = useState<7 | 30 | 90>(30);
 
   useEffect(() => {
-    let mounted = true;
     (async () => {
-      const from = new Date();
-      from.setDate(from.getDate() - 90);
-
       const { data, error } = await supabase
         .from("appointments")
-        .select("id,start_ts,status,normalized_service,service_raw,price_usd")
-        .gte("start_ts", from.toISOString())
+        .select("id,start_ts,status,service_raw,price_usd,normalized_service")
         .order("start_ts", { ascending: true });
-
-      if (!mounted) return;
-      if (!error && data) setRows(data as unknown as Row[]);
+      if (!error && data) setRows(data as Row[]);
     })();
-
-    return () => {
-      mounted = false;
-    };
   }, [supabase]);
 
-  const days = range === "7" ? 7 : range === "90" ? 90 : 30;
-  const since = useMemo(() => {
+  // Filter by range
+  const since = (days: number) => {
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return d;
-  }, [days]);
-
-  const visible = useMemo(
-    () => rows.filter((r) => new Date(r.start_ts) >= since),
-    [rows, since]
+    return d.getTime();
+  };
+  const rowsR = useMemo(
+    () => rows.filter((r) => new Date(r.start_ts).getTime() >= since(range)),
+    [rows, range]
   );
 
-  // Aggregate
-  const byService = useMemo(() => {
-    const mapCount = new Map<string, number>();
-    const mapRev = new Map<string, number>();
-
-    for (const r of visible) {
-      const label = serviceLabelFor(r.normalized_service, r.service_raw);
-      mapCount.set(label, (mapCount.get(label) ?? 0) + 1);
-      if (r.status !== "Cancelled") {
-        mapRev.set(
-          label,
-          (mapRev.get(label) ?? 0) + priceFor(r.normalized_service, toNumber(r.price_usd))
-        );
-      }
+  // Aggregate: bookings & revenue by service
+  const agg = useMemo(() => {
+    const map = new Map<string, { bookings: number; revenue: number }>();
+    for (const r of rowsR) {
+      const norm = normalizeService(r.normalized_service ?? r.service_raw);
+      const label = serviceLabelFor(norm, r.service_raw);
+      const price = r.status === "Cancelled" ? 0 : priceFor(norm, r.price_usd);
+      const entry = map.get(label) ?? { bookings: 0, revenue: 0 };
+      entry.bookings += r.status === "Cancelled" ? 0 : 1;
+      entry.revenue += price;
+      map.set(label, entry);
     }
-
-    return Array.from(mapCount.keys()).map((label) => ({
-      service: label,
-      bookings: mapCount.get(label) ?? 0,
-      revenue: mapRev.get(label) ?? 0,
+    const list = Array.from(map.entries()).map(([service, v]) => ({
+      service,
+      bookings: v.bookings,
+      revenue: v.revenue,
     }));
-  }, [visible]);
+    list.sort((a, b) => b.revenue - a.revenue);
+    return list;
+  }, [rowsR]);
 
-  const top = byService
-    .slice()
-    .sort((a, b) => b.revenue - a.revenue)[0];
+  const totalBookings = agg.reduce((s, a) => s + a.bookings, 0);
+  const totalRevenue = agg.reduce((s, a) => s + a.revenue, 0);
+  const top = agg[0];
 
-  const totalBookings = visible.length;
-  const totalRevenue = byService.reduce((s, x) => s + x.revenue, 0);
+  const fmtUSD = (n: number) =>
+    n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header metrics + range */}
-      <div className="flex items-center justify-between">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full md:w-auto">
-          <div className="card p-4">
-            <div className="text-sm text-cx-muted mb-1">Top Service</div>
-            {top ? (
-              <>
-                <div className="font-semibold">{top.service}</div>
-                <div className="text-sm text-cx-muted">{top.bookings} bookings • ${top.revenue}</div>
-              </>
-            ) : (
-              <div className="text-sm text-cx-muted">—</div>
-            )}
-          </div>
-
-          <div className="card p-4">
-            <div className="text-sm text-cx-muted mb-1">Total Bookings</div>
-            <div className="font-semibold text-2xl">{totalBookings}</div>
-          </div>
-
-          <div className="card p-4">
-            <div className="text-sm text-cx-muted mb-1">Revenue (excl. Cancelled)</div>
-            <div className="font-semibold text-2xl">${totalRevenue}</div>
+      {/* Stats row */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="c-card p-4">
+          <div className="c-title">Top Service</div>
+          <div className="mt-1 text-base">{top?.service ?? "—"}</div>
+          <div className="text-sm text-[color:var(--cx-muted)]">
+            {top ? `${top.bookings} bookings • ${fmtUSD(top.revenue)}` : "—"}
           </div>
         </div>
-
-        <Segmented
-          value={range}
-          onChange={(v) => setRange(v as any)}
-          options={[
-            { key: "7", label: "7 days" },
-            { key: "30", label: "30 days" },
-            { key: "90", label: "90 days" },
-          ]}
-        />
+        <div className="c-card p-4">
+          <div className="c-title">Total Bookings</div>
+          <div className="c-stat mt-2">{totalBookings}</div>
+        </div>
+        <div className="c-card p-4">
+          <div className="c-title">Revenue (excl. Cancelled)</div>
+          <div className="c-stat mt-2">{fmtUSD(totalRevenue)}</div>
+        </div>
       </div>
 
-      {/* Bookings by service (bar) */}
-      <div className="card p-4">
-        <div className="text-sm text-cx-muted mb-2">Bookings by service (last {days}d)</div>
-        <div className="h-[300px]">
+      {/* Range pills above chart, right aligned */}
+      <div className="flex items-center justify-end">
+        <RangePills value={range} onChange={(d) => setRange(d as 7 | 30 | 90)} ariaLabel="Services range" />
+      </div>
+
+      {/* Chart */}
+      <div className="c-card p-4">
+        <div className="c-title mb-3">Bookings by service (last {range}d)</div>
+        <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={byService} margin={{ left: 8, right: 8, top: 10, bottom: 20 }}>
+            <BarChart data={agg}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="service" interval={0} tickMargin={12} />
-              <YAxis allowDecimals={false} />
-              <Tooltip
-                content={({ label, payload }) => (
-                  <ChartTooltip
-                    label={label}
-                    items={(payload ?? []).map((p) => ({
-                      name: p?.dataKey === "bookings" ? "Bookings" : "Revenue",
-                      value:
-                        p?.dataKey === "bookings"
-                          ? (p?.value as number) ?? 0
-                          : `$${(p?.value as number) ?? 0}`,
-                    }))}
-                  />
-                )}
-              />
-              <Bar dataKey="bookings" fill="var(--cx-accent)" />
+              <XAxis dataKey="service" interval={0} height={40} tick={{ fill: "#9ca3af", fontSize: 12 }} />
+              <YAxis allowDecimals={false} tick={{ fill: "#9ca3af", fontSize: 12 }} />
+              <RTooltip content={<Tip />} />
+              <Bar dataKey="bookings" fill="var(--cx-bar)" radius={[6,6,0,0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* Breakdown table */}
-      <div className="card p-4">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Service</th>
-              <th>Bookings</th>
-              <th>Revenue</th>
-            </tr>
-          </thead>
-          <tbody>
-            {byService.map((r) => (
-              <tr key={r.service}>
-                <td className="text-cx-text">{r.service}</td>
-                <td>{r.bookings}</td>
-                <td>${r.revenue}</td>
+      {/* Table */}
+      <div className="c-card p-4">
+        <div className="c-title mb-3">Services</div>
+        <div className="overflow-x-auto">
+          <table className="w-full c-table">
+            <thead>
+              <tr>
+                <th className="py-2">Service</th>
+                <th className="py-2">Bookings</th>
+                <th className="py-2">Revenue</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {agg.map((s) => (
+                <tr key={s.service} className="border-t" style={{ borderColor: "var(--cx-border)" }}>
+                  <td className="py-3 pr-3">{s.service}</td>
+                  <td className="py-3 pr-3">{s.bookings}</td>
+                  <td className="py-3">{fmtUSD(s.revenue)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
