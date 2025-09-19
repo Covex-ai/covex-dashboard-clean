@@ -1,10 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import Stat from "@/components/Stat";
-import Segmented from "@/components/Segmented";
-import { ChartTooltip } from "@/components/ChartTooltip";
+import RangePills from "@/components/RangePills";
+import {
+  priceFor,
+  normalizeService,
+  serviceLabelFor,
+  toNumber,
+} from "@/lib/pricing";
 import {
   ResponsiveContainer,
   LineChart,
@@ -12,248 +16,244 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-  Tooltip,
-  BarChart,
+  Tooltip as RTooltip,
   Bar,
+  BarChart,
 } from "recharts";
-import { priceFor, serviceLabelFor } from "@/lib/pricing";
 
 type Row = {
-  id: number;
-  business_id: string;
-  start_ts: string;
+  id: string;
+  start_ts: string;           // ISO
   status: "Booked" | "Rescheduled" | "Cancelled";
-  normalized_service: string | null;
   service_raw: string | null;
-  price_usd: string | number | null;
+  price_usd: number | string | null;
+  normalized_service?: string | null;
 };
 
-const toNumber = (v: string | number | null | undefined): number =>
-  typeof v === "number" ? v : v ? Number(v) : 0;
+type TipProps = { label?: string; payload?: any[] };
 
-export default function DashboardPage() {
+function Tip({ label, payload }: TipProps) {
+  const val = payload?.[0]?.value;
   return (
-    <Suspense>
-      <Content />
-    </Suspense>
+    <div className="c-tip">
+      <div style={{ opacity: 0.7 }}>{label}</div>
+      <div style={{ marginTop: 2, fontWeight: 600 }}>{val}</div>
+    </div>
   );
 }
 
-function Content() {
+export default function Dashboard() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [rows, setRows] = useState<Row[]>([]);
-  const [range, setRange] = useState<"7" | "30" | "90">("30");
+  const [bookingsRange, setBookingsRange] = useState<7 | 30 | 90>(90);
+  const [revenueRange, setRevenueRange] = useState<7 | 30 | 90>(90);
 
   useEffect(() => {
-    let isMounted = true;
     (async () => {
-      // last 90 days, we’ll filter in-memory for the segmented control
-      const from = new Date();
-      from.setDate(from.getDate() - 90);
-
       const { data, error } = await supabase
         .from("appointments")
         .select(
-          "id,business_id,start_ts,status,normalized_service,service_raw,price_usd"
+          "id,start_ts,status,service_raw,price_usd,normalized_service"
         )
-        .gte("start_ts", from.toISOString())
         .order("start_ts", { ascending: true });
 
-      if (!isMounted) return;
-      if (!error && data) setRows(data as unknown as Row[]);
+      if (!error && data) setRows(data as Row[]);
+      // If error, we just leave empty quietly (UI handles it)
     })();
-    return () => {
-      isMounted = false;
-    };
   }, [supabase]);
 
-  const days = range === "7" ? 7 : range === "90" ? 90 : 30;
-  const since = useMemo(() => {
+  // Helper: constrain by range
+  const since = (days: number) => {
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return d;
-  }, [days]);
+    return d.getTime();
+  };
 
-  const visible = useMemo(
-    () => rows.filter((r) => new Date(r.start_ts) >= since),
-    [rows, since]
+  const rows90 = useMemo(
+    () => rows.filter((r) => new Date(r.start_ts).getTime() >= since(90)),
+    [rows]
   );
 
-  // Stats
-  const bookings = visible.length;
-  const revenue = visible
-    .filter((r) => r.status !== "Cancelled")
-    .reduce(
-      (sum, r) => sum + priceFor(r.normalized_service, toNumber(r.price_usd)),
-      0
-    );
-  const rescheduled = visible.filter((r) => r.status === "Rescheduled").length;
-  const cancelled = visible.filter((r) => r.status === "Cancelled").length;
+  // ---- Top stats (always 90d to match your tiles label) ----
+  const totalBookings90 = rows90.filter((r) => r.status !== "Cancelled").length;
 
-  // Bookings per day (line with dots)
+  const revenue90 = rows90
+    .filter((r) => r.status !== "Cancelled")
+    .reduce((sum, r) => {
+      const norm = normalizeService(r.normalized_service ?? r.service_raw);
+      return sum + priceFor(norm, r.price_usd);
+    }, 0);
+
+  const rescheduled90 = rows90.filter((r) => r.status === "Rescheduled").length;
+  const cancelled90 = rows90.filter((r) => r.status === "Cancelled").length;
+
+  // ---- Bookings per day (range switchable) ----
+  const bookingsRows = useMemo(
+    () => rows.filter((r) => new Date(r.start_ts).getTime() >= since(bookingsRange)),
+    [rows, bookingsRange]
+  );
+
   const byDay = useMemo(() => {
     const map = new Map<string, number>();
-    for (let i = 0; i < days; i++) {
-      const d = new Date(since);
-      d.setDate(d.getDate() + i);
-      const key = d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
-      map.set(key, 0);
-    }
-    for (const r of visible) {
+    for (const r of bookingsRows) {
       const d = new Date(r.start_ts);
-      const key = d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
-      map.set(key, (map.get(key) ?? 0) + 1);
+      const label = `${d.getMonth() + 1}/${d.getDate()}`;
+      map.set(label, (map.get(label) ?? 0) + (r.status !== "Cancelled" ? 1 : 0));
     }
-    return Array.from(map.entries()).map(([date, bookings]) => ({
-      date,
-      bookings,
-    }));
-  }, [visible, days, since]);
+    return Array.from(map.entries()).map(([day, bookings]) => ({ day, bookings }));
+  }, [bookingsRows]);
 
-  // Revenue by service (bar)
-  const byService = useMemo(() => {
+  // ---- Revenue by service (range switchable) ----
+  const revenueRows = useMemo(
+    () => rows.filter((r) => new Date(r.start_ts).getTime() >= since(revenueRange)),
+    [rows, revenueRange]
+  );
+
+  const revenueByService = useMemo(() => {
     const map = new Map<string, number>();
-    for (const r of visible) {
+    for (const r of revenueRows) {
       if (r.status === "Cancelled") continue;
-      const label = serviceLabelFor(r.normalized_service, r.service_raw);
-      map.set(
-        label,
-        (map.get(label) ?? 0) + priceFor(r.normalized_service, toNumber(r.price_usd))
-      );
+      const norm = normalizeService(r.normalized_service ?? r.service_raw);
+      const label = serviceLabelFor(norm, r.service_raw);
+      const amt = priceFor(norm, r.price_usd);
+      map.set(label, (map.get(label) ?? 0) + amt);
     }
     return Array.from(map.entries()).map(([service, revenue]) => ({
       service,
       revenue,
     }));
-  }, [visible]);
+  }, [revenueRows]);
+
+  const fmtUSD = (n: number) =>
+    n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
   return (
     <div className="p-6 space-y-6">
-      {/* Stat tiles */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Stat title={`Bookings (${days}d)`} value={bookings} />
-        <Stat title={`Revenue (${days}d)`} value={`$${revenue}`} />
-        <Stat title={`Rescheduled (${days}d)`} value={rescheduled} />
-        <Stat title={`Cancelled (${days}d)`} value={cancelled} />
+      {/* Top tiles */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="c-card p-4">
+          <div className="c-title">Bookings (90d)</div>
+          <div className="c-stat mt-2">{totalBookings90}</div>
+        </div>
+        <div className="c-card p-4">
+          <div className="c-title">Revenue (90d)</div>
+          <div className="c-stat mt-2">{fmtUSD(revenue90)}</div>
+        </div>
+        <div className="c-card p-4">
+          <div className="c-title">Rescheduled (90d)</div>
+          <div className="c-stat mt-2">{rescheduled90}</div>
+        </div>
+        <div className="c-card p-4">
+          <div className="c-title">Cancelled (90d)</div>
+          <div className="c-stat mt-2">{cancelled90}</div>
+        </div>
       </div>
 
-      {/* Range segmented + charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-sm text-cx-muted">Bookings per day (last {days} days)</div>
-            <Segmented
-              value={range}
-              onChange={(v) => setRange(v as any)}
-              options={[
-                { key: "7", label: "7d" },
-                { key: "30", label: "30d" },
-                { key: "90", label: "90d" },
-              ]}
-            />
+      {/* Charts row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Bookings per day */}
+        <div className="c-card p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="c-title">Bookings per day (last {bookingsRange}d)</div>
+            <RangePills value={bookingsRange} onChange={(d) => setBookingsRange(d as 7 | 30 | 90)} ariaLabel="Bookings range" />
           </div>
-
-          <div className="h-[280px]">
+          <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={byDay} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+              <LineChart data={byDay}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
-                <YAxis allowDecimals={false} />
-                <Tooltip
-                  content={({ label, payload }) => (
-                    <ChartTooltip
-                      label={label}
-                      items={(payload ?? []).map((p) => ({
-                        name: "Bookings",
-                        value: (p?.value as number) ?? 0,
-                      }))}
-                    />
-                  )}
-                />
+                <XAxis dataKey="day" tick={{ fill: "#9ca3af", fontSize: 12 }} />
+                <YAxis allowDecimals={false} tick={{ fill: "#9ca3af", fontSize: 12 }} />
+                <RTooltip content={<Tip />} />
                 <Line
                   type="monotone"
                   dataKey="bookings"
-                  stroke="var(--cx-accent)"
-                  strokeWidth={2}
-                  dot={{ r: 3 }}
-                  activeDot={{ r: 5 }}
+                  stroke="var(--cx-line)"
+                  strokeWidth={2.25}
+                  dot={{ r: 4, fill: "var(--cx-dot)", stroke: "var(--cx-bg)", strokeWidth: 1.5 }}
+                  activeDot={{ r: 5.5, stroke: "var(--cx-dot)", strokeWidth: 1.5 }}
                 />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        <div className="card p-4">
-          <div className="text-sm text-cx-muted mb-2">Revenue by service (last {days} days)</div>
-          <div className="h-[280px]">
+        {/* Revenue by service */}
+        <div className="c-card p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="c-title">Revenue by service (last {revenueRange}d)</div>
+            <RangePills value={revenueRange} onChange={(d) => setRevenueRange(d as 7 | 30 | 90)} ariaLabel="Revenue range" />
+          </div>
+          <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={byService} margin={{ left: 8, right: 8, top: 10, bottom: 20 }}>
+              <BarChart data={revenueByService}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="service" interval={0} angle={0} tickMargin={12} />
-                <YAxis />
-                <Tooltip
+                <XAxis
+                  dataKey="service"
+                  tick={{ fill: "#9ca3af", fontSize: 12 }}
+                  interval={0}
+                  height={40}
+                />
+                <YAxis
+                  tick={{ fill: "#9ca3af", fontSize: 12 }}
+                  tickFormatter={(v) => `$${v}`}
+                />
+                <RTooltip
                   content={({ label, payload }) => (
-                    <ChartTooltip
-                      label={label}
-                      items={(payload ?? []).map((p) => ({
-                        name: "Revenue",
-                        value: `$${(p?.value as number) ?? 0}`,
-                      }))}
-                    />
+                    <div className="c-tip">
+                      <div style={{ opacity: 0.7 }}>{label}</div>
+                      <div style={{ marginTop: 2, fontWeight: 600 }}>
+                        {fmtUSD(payload?.[0]?.value ?? 0)}
+                      </div>
+                    </div>
                   )}
                 />
-                <Bar dataKey="revenue" fill="var(--cx-accent)" />
+                <Bar dataKey="revenue" fill="var(--cx-bar)" radius={[6, 6, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
 
-      {/* Recent table */}
-      <div className="card p-4">
-        <div className="text-sm text-cx-muted mb-3">Recent appointments</div>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Time</th>
-              <th>Service</th>
-              <th>Name</th>
-              <th>Phone</th>
-              <th>Status</th>
-              <th>Price</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible
-              .slice()
-              .reverse()
-              .slice(0, 10)
-              .map((r) => {
+      {/* Recent appointments */}
+      <div className="c-card p-4">
+        <div className="c-title mb-3">Recent appointments</div>
+        <div className="overflow-x-auto">
+          <table className="w-full c-table">
+            <thead>
+              <tr>
+                <th className="py-2">Date</th>
+                <th className="py-2">Time</th>
+                <th className="py-2">Service</th>
+                <th className="py-2">Name</th>
+                <th className="py-2">Phone</th>
+                <th className="py-2">Status</th>
+                <th className="py-2">Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...rows90].reverse().slice(0, 8).map((r) => {
                 const d = new Date(r.start_ts);
-                const price = priceFor(r.normalized_service, toNumber(r.price_usd));
-                const label = serviceLabelFor(r.normalized_service, r.service_raw);
-                const pillClass =
-                  r.status === "Cancelled"
-                    ? "pill pill--bad"
-                    : r.status === "Rescheduled"
-                    ? "pill pill--warn"
-                    : "pill pill--ok";
-
+                const date = d.toLocaleDateString();
+                const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+                const norm = normalizeService(r.normalized_service ?? r.service_raw);
+                const label = serviceLabelFor(norm, r.service_raw);
+                const price = priceFor(norm, r.price_usd);
+                const isCancelled = r.status === "Cancelled";
                 return (
-                  <tr key={r.id} className={r.status === "Cancelled" ? "opacity-70" : ""}>
-                    <td>{d.toLocaleDateString()}</td>
-                    <td>{d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</td>
-                    <td className="text-cx-text">{label}</td>
-                    <td>-</td>
-                    <td>-</td>
-                    <td><span className={pillClass}>{r.status}</span></td>
-                    <td>{price ? `$${price}` : "-"}</td>
+                  <tr key={r.id} className="border-t" style={{ borderColor: "var(--cx-border)", opacity: isCancelled ? 0.6 : 1 }}>
+                    <td className="py-3 pr-3">{date}</td>
+                    <td className="py-3 pr-3">{time}</td>
+                    <td className="py-3 pr-3">{label}</td>
+                    <td className="py-3 pr-3">—</td>
+                    <td className="py-3 pr-3">—</td>
+                    <td className="py-3 pr-3">{r.status}</td>
+                    <td className="py-3">{price ? fmtUSD(price) : "—"}</td>
                   </tr>
                 );
               })}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
