@@ -53,7 +53,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-xs text-cx-muted mt-4">
-          Make sure <code className="text-white">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
+          Ensure <code className="text-white">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
           <code className="text-white">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> are set.
         </p>
       </div>
