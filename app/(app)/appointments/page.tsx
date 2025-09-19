@@ -21,11 +21,52 @@ type ApptRow = {
   end_ts: string | null;
   name: string | null;
   phone: string | null;
-  status: Status | null;
+  status: string | null; // raw from DB; we normalize below
   service_raw: string | null;
   normalized_service: NormalizedService | null;
   price_usd: number | string | null;
 };
+
+function normalizeStatus(s: string | null | undefined): Status | null {
+  if (!s) return null;
+  const t = s.trim().toLowerCase();
+  if (t === "booked") return "Booked";
+  if (t === "rescheduled") return "Rescheduled";
+  if (t === "cancelled") return "Cancelled";
+  if (t === "completed") return "Completed";
+  return null;
+}
+
+function StatusBadge({ value }: { value: Status | null }) {
+  // subtle, professional badges on pure black
+  const base =
+    "inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-medium border";
+  if (value === "Booked")
+    return (
+      <span className={`${base} border-emerald-700/40 bg-emerald-500/15 text-emerald-300`}>
+        Booked
+      </span>
+    );
+  if (value === "Rescheduled")
+    return (
+      <span className={`${base} border-amber-700/40 bg-amber-500/15 text-amber-300`}>
+        Rescheduled
+      </span>
+    );
+  if (value === "Cancelled")
+    return (
+      <span className={`${base} border-rose-700/40 bg-rose-500/15 text-rose-300`}>
+        Cancelled
+      </span>
+    );
+  if (value === "Completed")
+    return (
+      <span className={`${base} border-white/20 bg-white/10 text-cx-muted`}>
+        Completed
+      </span>
+    );
+  return <span className={`${base} border-cx-border text-cx-muted`}>-</span>;
+}
 
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
@@ -43,25 +84,31 @@ export default function AppointmentsPage() {
     const from = new Date();
     from.setDate(from.getDate() - days);
 
-    let query = supabase
+    // Always fetch all statuses in-range, then filter client-side:
+    // this fixes cases where "Completed" didn't match due to spacing/case.
+    const { data, error } = await supabase
       .from("appointments")
       .select("*")
       .gte("start_ts", from.toISOString())
       .order("start_ts", { ascending: false });
 
-    if (status !== "All") query = query.eq("status", status);
+    if (error) return;
 
-    const { data, error } = await query;
-    if (!error && data) {
-      const all = data as unknown as ApptRow[];
-      const filtered = q.trim()
-        ? all.filter((r) => {
-            const hay = `${r.name ?? ""} ${r.phone ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
-            return hay.includes(q.toLowerCase());
-          })
-        : all;
-      setRows(filtered);
-    }
+    const all = (data as unknown as ApptRow[]) ?? [];
+
+    const filteredByStatus =
+      status === "All"
+        ? all
+        : all.filter((r) => normalizeStatus(r.status) === status);
+
+    const filtered = q.trim()
+      ? filteredByStatus.filter((r) => {
+          const hay = `${r.name ?? ""} ${r.phone ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
+          return hay.includes(q.toLowerCase());
+        })
+      : filteredByStatus;
+
+    setRows(filtered);
   }
 
   useEffect(() => {
@@ -87,7 +134,7 @@ export default function AppointmentsPage() {
         <div className="flex gap-2">
           <RangePills value={range} onChange={setRange} />
 
-          {/* Make native select legible: dark field; force popup options to black text */}
+          {/* Legible native select: dark control; white popup with black text */}
           <select
             className="btn-pill bg-white/5 text-white [color-scheme:dark]"
             value={status}
@@ -101,7 +148,7 @@ export default function AppointmentsPage() {
           </select>
         </div>
 
-        {/* Ensure the search box isn't cramped on desktop */}
+        {/* Prevent cutoff on desktop */}
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -127,19 +174,27 @@ export default function AppointmentsPage() {
           <tbody>
             {rows.map((r) => {
               const ns = r.normalized_service ?? normalizeService(r.service_raw);
+              const st = normalizeStatus(r.status);
               return (
                 <tr key={r.id} className="border-t border-cx-border">
                   <td className="py-2 pr-4">
                     {new Date(r.start_ts).toLocaleDateString()}
                   </td>
                   <td className="py-2 pr-4">
-                    {new Date(r.start_ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                    {new Date(r.start_ts).toLocaleTimeString([], {
+                      hour: "numeric",
+                      minute: "2-digit",
+                    })}
                   </td>
                   <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
                   <td className="py-2 pr-4">{r.name ?? "-"}</td>
                   <td className="py-2 pr-4">{r.phone ?? "-"}</td>
-                  <td className="py-2 pr-4">{r.status ?? "-"}</td>
-                  <td className="py-2 pr-4">{fmtUSD(priceFor(ns, toNumber(r.price_usd)))}</td>
+                  <td className="py-2 pr-4">
+                    <StatusBadge value={st} />
+                  </td>
+                  <td className="py-2 pr-4">
+                    {fmtUSD(priceFor(ns, toNumber(r.price_usd)))}
+                  </td>
                 </tr>
               );
             })}
