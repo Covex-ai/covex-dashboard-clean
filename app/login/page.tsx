@@ -1,8 +1,11 @@
 "use client";
 
+import Image from "next/image";
 import { useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
+
+const LOGO_SRC = "/brand-logo.png";
 
 export default function LoginPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
@@ -11,6 +14,7 @@ export default function LoginPage() {
   const [pw, setPw] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [logoOk, setLogoOk] = useState(true);
 
   async function signIn() {
     setBusy(true);
@@ -24,7 +28,24 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
       <div className="w-full max-w-md bg-cx-surface border border-cx-border rounded-2xl p-6">
-        <h1 className="text-xl font-semibold mb-4">Sign in to Covex</h1>
+        {/* Logo */}
+        <div className="flex justify-center mb-5">
+          {logoOk ? (
+            <Image
+              src={LOGO_SRC}
+              alt="COVEX"
+              width={240}
+              height={48}
+              className="opacity-90 h-10 w-auto"
+              priority
+              onError={() => setLogoOk(false)}
+            />
+          ) : (
+            <span className="font-semibold tracking-[0.2em] text-white">COVEX</span>
+          )}
+        </div>
+
+        <h1 className="sr-only">Sign in to Covex</h1>
 
         <label className="block text-sm text-cx-muted mb-1">Email</label>
         <input
