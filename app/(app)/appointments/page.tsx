@@ -14,63 +14,28 @@ type Row = {
   caller_phone_e164: string | null;
   service_raw: string | null;
   normalized_service: NormalizedService;
-  start_ts: string;          // timestamptz
+  start_ts: string; // timestamptz
   end_ts: string | null;
   received_date: string | null;
   price_usd: string | number | null;
 };
 
-type RangeKey = 'today' | 'past7' | 'past30' | 'past90' | 'future';
+type RangeKey = 'today' | '7' | '30' | '90' | 'future';
 
-const RANGE_LABELS: Record<RangeKey, string> = {
+const RANGE_LABEL: Record<RangeKey, string> = {
   today: 'Today',
-  past7: 'Past 7',
-  past30: 'Past 30',
-  past90: 'Past 90',
+  '7': 'Past 7d',
+  '30': 'Past 30d',
+  '90': 'Past 90d',
   future: 'Future',
 };
 
-function startOfDay(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+function prettyPhone(e164?: string | null) {
+  if (!e164) return '—';
+  const m = e164.replace(/[^\d]/g, '').match(/^1?(\d{3})(\d{3})(\d{4})$/);
+  if (m) return `+1 (${m[1]}) ${m[2]}-${m[3]}`;
+  return e164;
 }
-function endOfDay(d = new Date()) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-
-function withinRange(ts: string, range: RangeKey) {
-  const dt = new Date(ts);
-
-  const now = new Date();
-  const todayStart = startOfDay(now);
-  const todayEnd = endOfDay(now);
-
-  switch (range) {
-    case 'today':
-      return dt >= todayStart && dt <= todayEnd;
-    case 'past7': {
-      const from = new Date(todayStart);
-      from.setDate(from.getDate() - 7);
-      return dt >= from && dt < todayStart;
-    }
-    case 'past30': {
-      const from = new Date(todayStart);
-      from.setDate(from.getDate() - 30);
-      return dt >= from && dt < todayStart;
-    }
-    case 'past90': {
-      const from = new Date(todayStart);
-      from.setDate(from.getDate() - 90);
-      return dt >= from && dt < todayStart;
-    }
-    case 'future':
-      return dt > todayEnd;
-  }
-}
-
 function fmtDate(ts: string) {
   const d = new Date(ts);
   return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric', year: 'numeric' });
@@ -79,34 +44,53 @@ function fmtTime(ts: string) {
   const d = new Date(ts);
   return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
-function prettyPhone(e164?: string | null) {
-  if (!e164) return '—';
-  // naive pretty format (+1 NNN NNN-NNNN)
-  const m = e164.match(/^\+?1?(\d{3})(\d{3})(\d{4})$/);
-  if (m) return `+1 (${m[1]}) ${m[2]}-${m[3]}`;
-  return e164;
-}
 
 export default function AppointmentsPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-[#9aa2ad]">Loading…</div>}>
+      <AppointmentsInner />
+    </Suspense>
+  );
+}
+
+function AppointmentsInner() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [rows, setRows] = useState<Row[]>([]);
-  const [search, setSearch] = useState('');
-  const [range, setRange] = useState<RangeKey>('past30'); // sensible default
   const [loading, setLoading] = useState(true);
 
-  // Fetch + realtime
+  // controls
+  const [q, setQ] = useState('');
+  const [range, setRange] = useState<RangeKey>('today');
+
   useEffect(() => {
     let canceled = false;
 
     async function load() {
       setLoading(true);
+
+      // find user's business_id
+      const { data: profile, error: pErr } = await supabase.from('profiles').select('business_id').maybeSingle();
+      if (pErr) console.error(pErr);
+
+      if (!profile?.business_id) {
+        setRows([]);
+        setLoading(false);
+        return;
+      }
+
+      // fetch a wide window and filter client-side for range tabs + search
+      const since = new Date();
+      since.setDate(since.getDate() - 120);
+
       const { data, error } = await supabase
         .from('appointments')
         .select(
           'id,business_id,booking_id,status,source,caller_name,caller_phone_e164,service_raw,normalized_service,start_ts,end_ts,received_date,price_usd'
         )
+        .eq('business_id', profile.business_id)
+        .gte('start_ts', since.toISOString())
         .order('start_ts', { ascending: false })
-        .limit(1000); // UI cap; adjust if you need more
+        .limit(3000);
 
       if (!canceled) {
         if (error) console.error(error);
@@ -117,7 +101,7 @@ export default function AppointmentsPage() {
 
     load();
 
-    // Realtime
+    // realtime updates (no refresh needed)
     const ch = supabase
       .channel('rt:appointments')
       .on(
@@ -125,15 +109,15 @@ export default function AppointmentsPage() {
         { event: '*', schema: 'public', table: 'appointments' },
         (payload) => {
           setRows((cur) => {
+            const r = (payload.new ?? payload.old) as Row;
+            const i = cur.findIndex((x) => x.id === r.id);
             const next = [...cur];
-            const row = (payload.new ?? payload.old) as Row;
-            const idx = next.findIndex((r) => r.id === row.id);
             if (payload.eventType === 'DELETE') {
-              if (idx >= 0) next.splice(idx, 1);
-            } else if (idx >= 0) {
-              next[idx] = row;
+              if (i >= 0) next.splice(i, 1);
+            } else if (i >= 0) {
+              next[i] = r;
             } else {
-              next.unshift(row);
+              next.unshift(r);
             }
             return next;
           });
@@ -147,60 +131,82 @@ export default function AppointmentsPage() {
     };
   }, [supabase]);
 
-  // Search + range filter
-  const visible = useMemo(() => {
-    const s = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      const inRange = withinRange(r.start_ts, range);
-      if (!inRange) return false;
+  // filter by range
+  const filteredByRange = (() => {
+    const now = new Date();
 
-      if (!s) return true;
-      const hay =
-        [
-          r.caller_name ?? '',
-          r.caller_phone_e164 ?? '',
-          r.service_raw ?? '',
-          r.normalized_service ?? '',
-          r.status ?? '',
-          r.source ?? '',
-        ]
-          .join(' ')
-          .toLowerCase();
-      return hay.includes(s);
-    });
-  }, [rows, search, range]);
+    if (range === 'future') {
+      return rows.filter((r) => new Date(r.start_ts) > now);
+    }
+    if (range === 'today') {
+      const start = new Date(now);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(now);
+      end.setHours(23, 59, 59, 999);
+      return rows.filter((r) => {
+        const d = new Date(r.start_ts);
+        return d >= start && d <= end;
+      });
+    }
+
+    const days = parseInt(range, 10);
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+    return rows.filter((r) => new Date(r.start_ts) >= from && new Date(r.start_ts) <= now);
+  })();
+
+  // search filter (name / phone / service)
+  const visible = filteredByRange.filter((r) => {
+    if (!q.trim()) return true;
+    const needle = q.toLowerCase();
+    const hay = [
+      r.caller_name ?? '',
+      r.caller_phone_e164 ?? '',
+      r.service_raw ?? '',
+      r.normalized_service ?? '',
+      r.source ?? '',
+      r.status ?? '',
+    ]
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(needle);
+  });
 
   return (
     <div className="p-6 space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      {/* header */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-[#dcdfe6] text-2xl font-semibold">Appointments</h1>
 
-        <div className="flex items-center gap-3">
-          {/* Range selector */}
+        {/* range + search */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="inline-flex rounded-xl border border-[#22262e] overflow-hidden">
-            {(['today', 'past7', 'past30', 'past90', 'future'] as RangeKey[]).map((k) => (
+            {(['today', '7', '30', '90', 'future'] as RangeKey[]).map((k) => (
               <button
                 key={k}
                 onClick={() => setRange(k)}
                 className={`px-3 py-1.5 text-sm ${
                   range === k ? 'bg-[#3b82f6] text-white' : 'text-[#9aa2ad] hover:text-[#dcdfe6]'
                 }`}
+                title={RANGE_LABEL[k]}
               >
-                {RANGE_LABELS[k]}
+                {RANGE_LABEL[k]}
               </button>
             ))}
           </div>
 
-          {/* Search */}
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name / phone / service"
-            className="w-72 rounded-xl bg-[#0f1115] border border-[#22262e] px-3 py-2 text-sm text-[#dcdfe6] placeholder-[#9aa2ad] focus:outline-none focus:ring-2 focus:ring-[#3b82f6]/40"
-          />
+          <div className="rounded-xl border border-[#22262e] bg-[#0f1115] px-3 py-1.5">
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search name, phone, service…"
+              className="bg-transparent outline-none text-sm text-[#dcdfe6] placeholder-[#9aa2ad]"
+            />
+          </div>
         </div>
       </div>
 
+      {/* table */}
       <div className="rounded-2xl border border-[#22262e] bg-[#0f1115] shadow-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-[#0a0a0b] text-[#9aa2ad]">
@@ -225,13 +231,13 @@ export default function AppointmentsPage() {
             ) : visible.length === 0 ? (
               <tr>
                 <td className="px-4 py-6 text-[#9aa2ad]" colSpan={8}>
-                  No appointments match this filter.
+                  No appointments found.
                 </td>
               </tr>
             ) : (
               visible.map((r) => {
-                const price = priceFor(r.normalized_service, r.price_usd);
                 const label = serviceLabelFor(r.normalized_service, r.service_raw);
+                const price = priceFor(r.normalized_service, toNumber(r.price_usd));
                 const statusClasses =
                   r.status === 'Cancelled'
                     ? 'bg-red-500/15 text-red-300 border border-red-500/30'
@@ -242,10 +248,7 @@ export default function AppointmentsPage() {
                     : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30';
 
                 return (
-                  <tr
-                    key={r.id}
-                    className={`border-t border-[#22262e] ${r.status === 'Cancelled' ? 'opacity-60' : ''}`}
-                  >
+                  <tr key={r.id} className="border-t border-[#22262e]">
                     <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
                     <td className="px-4 py-3 text-[#dcdfe6]">{fmtTime(r.start_ts)}</td>
                     <td className="px-4 py-3 text-[#dcdfe6]">{label}</td>
