@@ -14,6 +14,7 @@ import {
 
 type Range = "7d" | "30d" | "90d";
 type Status = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed";
+type View = "Today" | "Future" | "All";
 
 type ApptRow = {
   id: number;
@@ -21,7 +22,7 @@ type ApptRow = {
   end_ts: string | null;
   name: string | null;
   phone: string | null;
-  status: string | null; // raw from DB; we normalize below
+  status: string | null; // raw; we normalize below
   service_raw: string | null;
   normalized_service: NormalizedService | null;
   price_usd: number | string | null;
@@ -37,8 +38,16 @@ function normalizeStatus(s: string | null | undefined): Status | null {
   return null;
 }
 
+function isCompleted(row: ApptRow): boolean {
+  // Consider as completed if:
+  // 1) status is explicitly "Completed", OR
+  // 2) appointment start time is in the past AND not Cancelled.
+  const st = normalizeStatus(row.status);
+  const past = new Date(row.start_ts).getTime() < Date.now();
+  return st === "Completed" || (past && st !== "Cancelled");
+}
+
 function StatusBadge({ value }: { value: Status | null }) {
-  // subtle, professional badges on pure black
   const base =
     "inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-medium border";
   if (value === "Booked")
@@ -70,6 +79,7 @@ function StatusBadge({ value }: { value: Status | null }) {
 
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
+  const [view, setView] = useState<View>("Today"); // <- default = Today
   const [range, setRange] = useState<Range>("30d");
   const [status, setStatus] = useState<Status>("All");
   const [q, setQ] = useState("");
@@ -79,13 +89,21 @@ export default function AppointmentsPage() {
     return r === "7d" ? 7 : r === "30d" ? 30 : 90;
   }
 
-  async function load() {
-    const days = daysFor(range);
-    const from = new Date();
-    from.setDate(from.getDate() - days);
+  function startOfToday() {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+  }
+  function endOfToday() {
+    const n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 23, 59, 59, 999);
+  }
 
-    // Always fetch all statuses in-range, then filter client-side:
-    // this fixes cases where "Completed" didn't match due to spacing/case.
+  async function load() {
+    // Always fetch a reasonable window, then filter client-side for view/status/search.
+    const baseDays = daysFor(range);
+    const from = new Date();
+    from.setDate(from.getDate() - baseDays);
+
     const { data, error } = await supabase
       .from("appointments")
       .select("*")
@@ -96,25 +114,48 @@ export default function AppointmentsPage() {
 
     const all = (data as unknown as ApptRow[]) ?? [];
 
-    const filteredByStatus =
-      status === "All"
-        ? all
-        : all.filter((r) => normalizeStatus(r.status) === status);
+    // 1) Filter by VIEW
+    const sToday = startOfToday().getTime();
+    const eToday = endOfToday().getTime();
+    let byView: ApptRow[] = all;
 
-    const filtered = q.trim()
-      ? filteredByStatus.filter((r) => {
+    if (view === "Today") {
+      byView = all.filter((r) => {
+        const t = new Date(r.start_ts).getTime();
+        return t >= sToday && t <= eToday;
+      });
+    } else if (view === "Future") {
+      byView = all.filter((r) => {
+        const t = new Date(r.start_ts).getTime();
+        return t > eToday;
+      });
+    } // "All" just uses the base window
+
+    // 2) Filter by STATUS (robust)
+    let byStatus: ApptRow[];
+    if (status === "All") {
+      byStatus = byView;
+    } else if (status === "Completed") {
+      byStatus = byView.filter(isCompleted);
+    } else {
+      byStatus = byView.filter((r) => normalizeStatus(r.status) === status);
+    }
+
+    // 3) Search filter
+    const final = q.trim()
+      ? byStatus.filter((r) => {
           const hay = `${r.name ?? ""} ${r.phone ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
           return hay.includes(q.toLowerCase());
         })
-      : filteredByStatus;
+      : byStatus;
 
-    setRows(filtered);
+    setRows(final);
   }
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range, status, q]);
+  }, [view, range, status, q]);
 
   useEffect(() => {
     const ch = supabase
@@ -132,6 +173,21 @@ export default function AppointmentsPage() {
       {/* Controls row */}
       <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
         <div className="flex gap-2">
+          {/* New view tabs */}
+          <div className="flex gap-2">
+            {(["Today","Future","All"] as View[]).map(v => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setView(v)}
+                className={`btn-pill ${view === v ? "btn-pill--active" : ""}`}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+
+          {/* Keep range pills (used when View=All; harmless otherwise) */}
           <RangePills value={range} onChange={setRange} />
 
           {/* Legible native select: dark control; white popup with black text */}
@@ -187,11 +243,9 @@ export default function AppointmentsPage() {
                     })}
                   </td>
                   <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
-                  <td className="py-2 pr-4">{r.name ?? "-"}</td>
-                  <td className="py-2 pr-4">{r.phone ?? "-"}</td>
-                  <td className="py-2 pr-4">
-                    <StatusBadge value={st} />
-                  </td>
+                  <td className="py-2 pr-4">{r.name ?? "—"}</td>
+                  <td className="py-2 pr-4">{r.phone ?? "—"}</td>
+                  <td className="py-2 pr-4"><StatusBadge value={st} /></td>
                   <td className="py-2 pr-4">
                     {fmtUSD(priceFor(ns, toNumber(r.price_usd)))}
                   </td>
