@@ -31,8 +31,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         router.replace("/login");
       }
     });
-    return () => sub.subscription.unsubscribe();
-  }, [pathname]);
+
+    return () => {
+      sub.subscription.unsubscribe();
+    };
+  }, [pathname, router, supabase]);
 
   if (!ready || !authed) return null;
 
