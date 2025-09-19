@@ -18,15 +18,14 @@ type View = "Today" | "Future" | "All";
 
 type ApptRow = {
   id: number;
-  start_ts: string | null;          // ISO (may be null in some rows)
-  end_ts: string | null;            // ISO
-  created_at?: string | null;       // optional fallback for timing
-  // DB sometimes stores these as caller_* instead of name/phone
+  start_ts: string | null;
+  end_ts: string | null;
+  created_at?: string | null;
   name: string | null;
   phone: string | null;
   caller_name?: string | null;
   caller_phone_e164?: string | null;
-  status: string | null;            // raw; we normalize
+  status: string | null;
   service_raw: string | null;
   normalized_service: NormalizedService | null;
   price_usd: number | string | null;
@@ -42,8 +41,7 @@ function normalizeStatus(s: string | null | undefined): Status | null {
   return null;
 }
 
-// pick best timestamp we have for comparisons
-function getWhen(row: ApptRow): Date | null {
+function bestWhen(row: ApptRow): Date | null {
   const a = row.start_ts ? new Date(row.start_ts) : null;
   const b = row.end_ts ? new Date(row.end_ts) : null;
   const c = row.created_at ? new Date(row.created_at) : null;
@@ -54,9 +52,8 @@ function isCompleted(row: ApptRow): boolean {
   const st = normalizeStatus(row.status);
   if (st === "Cancelled") return false;
   if (st === "Completed") return true;
-  const when = getWhen(row);
-  if (!when) return false;
-  return when.getTime() < Date.now();
+  const when = bestWhen(row);
+  return !!when && when.getTime() < Date.now();
 }
 
 function StatusBadge({ value }: { value: Status | null }) {
@@ -91,8 +88,8 @@ function StatusBadge({ value }: { value: Status | null }) {
 
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [view, setView] = useState<View>("Today"); // default = Today
-  const [range, setRange] = useState<Range>("30d");
+  const [view, setView] = useState<View>("Today"); // default tab
+  const [range, setRange] = useState<Range>("30d"); // only used when view==="All"
   const [status, setStatus] = useState<Status>("All");
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<ApptRow[]>([]);
@@ -100,22 +97,21 @@ export default function AppointmentsPage() {
   function daysFor(r: Range) {
     return r === "7d" ? 7 : r === "30d" ? 30 : 90;
   }
-
-  function startOfToday() {
+  const startOfToday = () => {
     const n = new Date();
     return new Date(n.getFullYear(), n.getMonth(), n.getDate());
-  }
-  function endOfToday() {
+  };
+  const endOfToday = () => {
     const n = new Date();
     return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 23, 59, 59, 999);
-  }
+  };
 
   async function load() {
+    // Fetch a reasonable window; filter client-side for view/status/search
     const baseDays = daysFor(range);
     const from = new Date();
     from.setDate(from.getDate() - baseDays);
 
-    // Fetch a window; we filter client-side for view/status/search
     const { data, error } = await supabase
       .from("appointments")
       .select("*")
@@ -126,37 +122,34 @@ export default function AppointmentsPage() {
 
     const all = (data as unknown as ApptRow[]) ?? [];
 
-    // 1) Filter by VIEW
+    // 1) View filter
     const sToday = startOfToday().getTime();
     const eToday = endOfToday().getTime();
     let byView: ApptRow[] = all;
 
     if (view === "Today") {
       byView = all.filter((r) => {
-        const when = getWhen(r);
+        const when = bestWhen(r);
         if (!when) return false;
         const t = when.getTime();
         return t >= sToday && t <= eToday;
-        });
+      });
     } else if (view === "Future") {
       byView = all.filter((r) => {
-        const when = getWhen(r);
+        const when = bestWhen(r);
         if (!when) return false;
         return when.getTime() > eToday;
       });
     }
+    // view === "All" -> keep base window
 
-    // 2) Filter by STATUS (robust)
+    // 2) Status filter
     let byStatus: ApptRow[];
-    if (status === "All") {
-      byStatus = byView;
-    } else if (status === "Completed") {
-      byStatus = byView.filter(isCompleted);
-    } else {
-      byStatus = byView.filter((r) => normalizeStatus(r.status) === status);
-    }
+    if (status === "All") byStatus = byView;
+    else if (status === "Completed") byStatus = byView.filter(isCompleted);
+    else byStatus = byView.filter((r) => normalizeStatus(r.status) === status);
 
-    // 3) Search (now includes caller_* columns)
+    // 3) Search (supports caller_* columns)
     const final = q.trim()
       ? byStatus.filter((r) => {
           const name = r.name ?? r.caller_name ?? "";
@@ -189,22 +182,21 @@ export default function AppointmentsPage() {
     <div className="space-y-4">
       {/* Controls row */}
       <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {/* View tabs */}
-          <div className="flex gap-2">
-            {(["Today","Future","All"] as View[]).map(v => (
-              <button
-                key={v}
-                type="button"
-                onClick={() => setView(v)}
-                className={`btn-pill ${view === v ? "btn-pill--active" : ""}`}
-              >
-                {v}
-              </button>
-            ))}
-          </div>
+          {(["Today", "Future", "All"] as View[]).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              className={`btn-pill ${view === v ? "btn-pill--active" : ""}`}
+            >
+              {v}
+            </button>
+          ))}
 
-          <RangePills value={range} onChange={setRange} />
+          {/* Range pills only when on All (so you never see two “actives” at once) */}
+          {view === "All" && <RangePills value={range} onChange={setRange} />}
 
           {/* Legible native select */}
           <select
@@ -246,25 +238,21 @@ export default function AppointmentsPage() {
           <tbody>
             {rows.map((r) => {
               const ns = r.normalized_service ?? normalizeService(r.service_raw);
-              const st = normalizeStatus(r.status);
+              const st = normalizeStatus(r.status) ?? (isCompleted(r) ? "Completed" : null);
+              const when = bestWhen(r);
               const name = r.name ?? r.caller_name ?? "—";
               const phone = r.phone ?? r.caller_phone_e164 ?? "—";
-              const when = getWhen(r);
 
               return (
                 <tr key={r.id} className="border-t border-cx-border">
+                  <td className="py-2 pr-4">{when ? when.toLocaleDateString() : "—"}</td>
                   <td className="py-2 pr-4">
-                    {when ? when.toLocaleDateString() : "—"}
-                  </td>
-                  <td className="py-2 pr-4">
-                    {when
-                      ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-                      : "—"}
+                    {when ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—"}
                   </td>
                   <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
                   <td className="py-2 pr-4">{name}</td>
                   <td className="py-2 pr-4">{phone}</td>
-                  <td className="py-2 pr-4"><StatusBadge value={st ?? (isCompleted(r) ? "Completed" : null)} /></td>
+                  <td className="py-2 pr-4"><StatusBadge value={st} /></td>
                   <td className="py-2 pr-4">{fmtUSD(priceFor(ns, toNumber(r.price_usd)))}</td>
                 </tr>
               );
