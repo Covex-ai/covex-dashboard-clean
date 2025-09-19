@@ -42,7 +42,7 @@ export default function Sidebar() {
                       : "text-cx-muted hover:text-cx-text hover:bg-cx-bg/60",
                   ].join(" ")}
                 >
-                  {/* Left active indicator */}
+                  {/* Left indicator */}
                   <span
                     className={[
                       "absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[3px] rounded-full",
