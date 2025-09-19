@@ -16,10 +16,8 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Header */}
       <div className="h-16 px-5 flex items-center gap-3 border-b border-cx-border">
-        {/* If you have a wordmark, place it here. Fallback to text. */}
-        {/* Put your SVG at /public/covex-wordmark.svg */}
+        {/* Preferred: silver/cutout wordmark */}
         <Image
           src="/covex-wordmark.svg"
           alt="COVEX"
@@ -27,14 +25,12 @@ export default function Sidebar() {
           height={20}
           className="opacity-90"
           priority
-          onError={() => {}}
         />
-        {/* If you don’t have the SVG yet, comment out Image above and use text:
+        {/* If SVG missing, fallback text:
         <span className="font-semibold tracking-[0.2em] text-white">COVEX</span>
         */}
       </div>
 
-      {/* Nav */}
       <nav className="flex-1 p-3">
         {links.map((l) => {
           const active = pathname === l.href;
