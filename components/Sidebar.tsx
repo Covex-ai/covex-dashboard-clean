@@ -13,7 +13,8 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-const LOGO_SRC = "/brand-logo.png"; // 👈 Put your real logo at /public/brand-logo.png
+// Put your actual logo at /public/brand-logo.png (PNG or SVG)
+const LOGO_SRC = "/brand-logo.png";
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -40,7 +41,6 @@ export default function Sidebar() {
             onError={() => setLogoOk(false)}
           />
         ) : (
-          // graceful fallback if logo missing
           <span className="font-semibold tracking-[0.2em] text-white">COVEX</span>
         )}
       </div>
@@ -53,9 +53,11 @@ export default function Sidebar() {
               key={l.href}
               href={l.href}
               className={`block px-4 py-2.5 rounded-xl mb-1 font-medium transition
-                ${active
-                  ? "bg-white/10 text-white"
-                  : "text-cx-muted hover:text-white hover:bg-white/5"}`}
+                ${
+                  active
+                    ? "bg-white/10 text-white"
+                    : "text-cx-muted hover:text-white hover:bg-white/5"
+                }`}
             >
               {l.label}
             </Link>
@@ -73,3 +75,4 @@ export default function Sidebar() {
       </div>
     </aside>
   );
+}
