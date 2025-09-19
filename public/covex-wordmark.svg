@@ -1,0 +1,11 @@
+<svg width="104" height="20" viewBox="0 0 104 20" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="1" stop-color="#c9c9c9" />
+    </linearGradient>
+  </defs>
+  <g fill="url(#g)" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial" font-weight="600" font-size="16" letter-spacing="0.22em">
+    <text x="0" y="15">COVEX</text>
+  </g>
+</svg>
