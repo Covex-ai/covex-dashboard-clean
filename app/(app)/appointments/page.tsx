@@ -3,7 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 import RangePills from "@/components/RangePills";
-import { fmtUSD, normalizeService, priceFor, serviceLabelFor, toNumber, type NormalizedService } from "@/lib/pricing";
+import {
+  fmtUSD,
+  normalizeService,
+  priceFor,
+  serviceLabelFor,
+  toNumber,
+  type NormalizedService,
+} from "@/lib/pricing";
 
 type Range = "7d" | "30d" | "90d";
 type Status = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed";
@@ -27,7 +34,9 @@ export default function AppointmentsPage() {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<ApptRow[]>([]);
 
-  function daysFor(r: Range) { return r === "7d" ? 7 : r === "30d" ? 30 : 90; }
+  function daysFor(r: Range) {
+    return r === "7d" ? 7 : r === "30d" ? 30 : 90;
+  }
 
   async function load() {
     const days = daysFor(range);
@@ -55,37 +64,53 @@ export default function AppointmentsPage() {
     }
   }
 
-  useEffect(() => { load(); }, [range, status, q]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, status, q]);
 
   useEffect(() => {
     const ch = supabase
       .channel("rt-appointments")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, (_p) => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => load())
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+    return () => {
+      supabase.removeChannel(ch);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <div className="space-y-4">
+      {/* Controls row */}
       <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
         <div className="flex gap-2">
           <RangePills value={range} onChange={setRange} />
+
+          {/* Make native select legible: dark field; force popup options to black text */}
           <select
-            className="btn-pill bg-white/5"
+            className="btn-pill bg-white/5 text-white [color-scheme:dark]"
             value={status}
             onChange={(e) => setStatus(e.target.value as Status)}
           >
-            {["All","Booked","Rescheduled","Cancelled","Completed"].map(s => <option key={s} value={s}>{s}</option>)}
+            {["All", "Booked", "Rescheduled", "Cancelled", "Completed"].map((s) => (
+              <option key={s} value={s} className="text-black bg-white">
+                {s}
+              </option>
+            ))}
           </select>
         </div>
+
+        {/* Ensure the search box isn't cramped on desktop */}
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search name, phone, service"
-          className="px-3 py-2 rounded-xl bg-cx-surface border border-cx-border text-sm outline-none"
+          className="px-3 py-2 rounded-xl bg-cx-surface border border-cx-border text-sm outline-none w-full md:w-80"
         />
       </div>
 
+      {/* Table */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="text-cx-muted">
@@ -104,8 +129,12 @@ export default function AppointmentsPage() {
               const ns = r.normalized_service ?? normalizeService(r.service_raw);
               return (
                 <tr key={r.id} className="border-t border-cx-border">
-                  <td className="py-2 pr-4">{new Date(r.start_ts).toLocaleDateString()}</td>
-                  <td className="py-2 pr-4">{new Date(r.start_ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</td>
+                  <td className="py-2 pr-4">
+                    {new Date(r.start_ts).toLocaleDateString()}
+                  </td>
+                  <td className="py-2 pr-4">
+                    {new Date(r.start_ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                  </td>
                   <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
                   <td className="py-2 pr-4">{r.name ?? "-"}</td>
                   <td className="py-2 pr-4">{r.phone ?? "-"}</td>
@@ -116,7 +145,9 @@ export default function AppointmentsPage() {
             })}
             {rows.length === 0 && (
               <tr>
-                <td className="py-6 text-center text-cx-muted" colSpan={7}>No results.</td>
+                <td className="py-6 text-center text-cx-muted" colSpan={7}>
+                  No results.
+                </td>
               </tr>
             )}
           </tbody>
