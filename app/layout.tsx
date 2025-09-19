@@ -1,21 +1,15 @@
-import "./globals.css";
-import Sidebar from "@/components/Sidebar";
+import "@/app/globals.css";
+import type { Metadata } from "next";
 
-export const metadata = {
+export const metadata: Metadata = {
   title: "Covex",
-  description: "Covex Dashboard",
-  icons: { icon: "/favicon.svg" }, // ok if file missing; remove if you prefer
+  description: "Covex",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="bg-cx-bg text-cx-text">
-      <body className="min-h-screen antialiased selection:bg-white/10 selection:text-white">
-        <div className="flex min-h-screen">
-          <Sidebar />
-          <main className="flex-1 min-w-0 p-6 md:p-8">{children}</main>
-        </div>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }
