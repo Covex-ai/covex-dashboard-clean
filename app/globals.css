@@ -2,90 +2,54 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ---- Covex Dark Theme (no blue, premium black/white) ---- */
+/* ==== Covex Dark (pure black) tokens ==== */
 :root {
-  --cx-bg: #0b0b0b;          /* page background (pure dark) */
-  --cx-surface: #121212;     /* cards / panels */
-  --cx-border: #232323;      /* subtle borders */
-  --cx-text: #f3f4f6;        /* primary text */
-  --cx-muted: #a3a3a3;       /* muted text */
-  --cx-accent: #ffffff;      /* highlight, accents (white, not blue) */
-
-  /* charts */
-  --cx-grid: #222;           /* chart grid */
-  --cx-line: #e5e7eb;        /* line stroke */
-  --cx-dot: #ffffff;         /* dot color */
-  --cx-bar: #f2f2f2;         /* bar fill */
-  --cx-tooltip-bg: #0f0f10;  /* tooltip background */
-  --cx-tooltip-border: #2a2a2a;
+  --cx-bg: #000000;         /* pure black background */
+  --cx-surface: #0a0a0a;    /* near-black panels */
+  --cx-border: #1a1a1a;     /* subtle borders */
+  --cx-text: #ffffff;       /* pure white text */
+  --cx-muted: rgba(255,255,255,.64);  /* muted white */
+  --cx-accent: #ffffff;     /* accent = white */
 }
 
-/* Tailwind shorthands */
+/* Base document colors */
 html, body {
-  @apply bg-[color:var(--cx-bg)] text-[color:var(--cx-text)] antialiased;
-}
-
-/* Surface cards */
-.c-card {
-  background: var(--cx-surface);
-  border: 1px solid var(--cx-border);
-  border-radius: 14px;
-}
-
-/* Stat value */
-.c-stat {
-  @apply text-3xl font-semibold;
-}
-
-/* Section titles */
-.c-title {
-  @apply text-sm font-medium text-[color:var(--cx-muted)];
-}
-
-/* Range pills (7d / 30d / 90d) */
-.c-pills {
-  @apply inline-flex items-center gap-2 rounded-xl p-1 border;
-  border-color: var(--cx-border);
-  background: color-mix(in oklab, var(--cx-surface) 96%, black 4%);
-}
-.c-pill {
-  @apply text-xs font-medium px-3 py-1 rounded-lg transition;
-  color: var(--cx-muted);
-}
-.c-pill[data-active="true"] {
-  color: var(--cx-text);
-  background: #171717;
-}
-
-/* Recharts – dark mode look (no cyan) */
-.recharts-cartesian-grid line {
-  stroke: var(--cx-grid);
-}
-.recharts-tooltip-wrapper .c-tip {
-  background: var(--cx-tooltip-bg);
-  border: 1px solid var(--cx-tooltip-border);
-  color: var(--cx-text);
-  padding: 8px 10px;
-  border-radius: 10px;
-  box-shadow: 0 10px 20px rgba(0,0,0,.35);
-}
-
-/* Tables */
-.c-table th {
-  @apply text-left text-sm font-medium;
-  color: var(--cx-muted);
-}
-.c-table td {
-  @apply text-sm;
+  background-color: var(--cx-bg);
   color: var(--cx-text);
 }
 
-/* Sidebar */
-.c-sidebar {
-  background: linear-gradient(180deg, #0b0b0b 0%, #0d0d0d 100%);
-  border-right: 1px solid var(--cx-border);
+/* Utility classes used throughout the app */
+.bg-cx-bg      { background-color: var(--cx-bg); }
+.bg-cx-surface { background-color: var(--cx-surface); }
+.text-cx-text  { color: var(--cx-text); }
+.text-cx-muted { color: var(--cx-muted); }
+.border-cx-border { border-color: var(--cx-border); }
+
+/* Buttons / pills on dark */
+.btn-pill {
+  @apply px-3 py-1.5 rounded-xl text-sm font-medium transition;
+  background: rgba(255,255,255,.06);
+  color: rgba(255,255,255,.75);
 }
-.c-brand {
-  @apply flex items-center gap-3 h-16 px-5 border-b;
-  border-color: var(--cx-border);
+.btn-pill:hover { color: #fff; }
+.btn-pill--active {
+  background: rgba(255,255,255,.12);
+  color: #ffffff;
+}
+
+/* Recharts – force tooltips, axes, grid to dark theme */
+.recharts-default-tooltip {
+  background: #000 !important;
+  border: 1px solid var(--cx-border) !important;
+  color: #fff !important;
+  border-radius: 12px !important;
+  padding: 8px 10px !important;
+}
+.recharts-cartesian-grid-vertical line,
+.recharts-cartesian-grid-horizontal line {
+  stroke: #1a1a1a !important;
+}
+.recharts-xAxis .recharts-cartesian-axis-tick-value,
+.recharts-yAxis .recharts-cartesian-axis-tick-value {
+  fill: #9aa2b1 !important;
 }
