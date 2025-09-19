@@ -14,8 +14,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="flex min-h-screen bg-cx-bg text-cx-text">
           {/* SINGLE sidebar – do not render Sidebar in any page */}
           <Sidebar />
-
-          {/* Content area */}
           <main className="flex-1">
             <div className="mx-auto max-w-[1200px] px-6 py-6">{children}</div>
           </main>
