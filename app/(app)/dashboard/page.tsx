@@ -22,7 +22,7 @@ type Row = {
   normalized_service: 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60' | null;
   start_ts: string;
   end_ts: string | null;
-  price_usd: string | number | null; // Supabase numeric -> string
+  price_usd: string | number | null; // numeric -> string
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -35,7 +35,6 @@ function fmtTime(iso: string) {
   const d = new Date(iso);
   return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
-// numeric coercion helper for Supabase numeric
 function toNumber(v: number | string | null | undefined): number | null {
   if (v === null || v === undefined) return null;
   const n = typeof v === 'number' ? v : parseFloat(v);
@@ -50,13 +49,13 @@ function Inner() {
   const [loading, setLoading] = useState(true);
   const [biz, setBiz] = useState<string | null>(null);
 
+  // Resolve business
   useEffect(() => {
     const bizParam = params.get('biz');
     if (bizParam) {
       setBiz(bizParam);
       return;
     }
-
     (async () => {
       const { data: u } = await supabase.auth.getUser();
       const uid = u.user?.id;
@@ -73,6 +72,7 @@ function Inner() {
     })();
   }, [params, supabase]);
 
+  // Initial load
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -94,16 +94,49 @@ function Inner() {
     })();
   }, [supabase, biz]);
 
+  // Realtime subscription
+  useEffect(() => {
+    if (!biz) return;
+
+    const channel = supabase
+      .channel(`dashboard-appointments-${biz}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'appointments', filter: `business_id=eq.${biz}` },
+        (payload: any) => {
+          setRows((prev) => {
+            const next = [...prev];
+            const row = (payload.new || payload.old) as Row;
+            const idx = next.findIndex((r) => r.id === row.id);
+
+            if (payload.eventType === 'INSERT') {
+              if (idx === -1) next.push(row);
+              else next[idx] = row;
+            } else if (payload.eventType === 'UPDATE') {
+              if (idx !== -1) next[idx] = row;
+              else next.push(row);
+            } else if (payload.eventType === 'DELETE') {
+              if (idx !== -1) next.splice(idx, 1);
+            }
+            next.sort((a, b) => new Date(a.start_ts).getTime() - new Date(b.start_ts).getTime());
+            return next;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, biz]);
+
   // KPIs
   const now = Date.now();
   const upcoming = rows.filter(r => new Date(r.start_ts).getTime() >= now && r.status !== 'Cancelled').length;
   const booked30 = rows.filter(r => r.status === 'Booked' || r.status === 'Rescheduled').length;
   const revenue30 = rows
     .filter(r => r.status !== 'Cancelled')
-    .reduce((sum, r) => {
-      const p = priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0; // <-- coalesce to 0
-      return sum + p;
-    }, 0);
+    .reduce((sum, r) => sum + (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0), 0);
 
   // Chart #1: bookings per day (last 30d)
   const byDay = (() => {
@@ -125,22 +158,21 @@ function Inner() {
     }));
   })();
 
-  // Chart #2: revenue by service (last 30d, excluding cancelled)
+  // Chart #2: revenue by service (last 30d)
   const serviceRevenue = (() => {
     const svc = new Map<string, number>();
     rows.forEach(r => {
       if (r.status === 'Cancelled') return;
-      const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0); // <-- coalesce
+      const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0);
       const key = r.normalized_service || 'Other';
       svc.set(key, (svc.get(key) || 0) + price);
     });
     return Array.from(svc.entries()).map(([service, revenue]) => ({ service, revenue }));
   })();
 
-  // Recent items
+  // Recent blocks
   const recent = [...rows].sort(
-    (a, b) =>
-      new Date(b.start_ts).getTime() - new Date(a.start_ts).getTime()
+    (a, b) => new Date(b.start_ts).getTime() - new Date(a.start_ts).getTime()
   ).slice(0, 6);
 
   const recentChanges = [...rows]
@@ -152,7 +184,7 @@ function Inner() {
 
   return (
     <div className="p-6 space-y-5">
-      {/* KPI cards */}
+      {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
           <div className="text-[#9aa2ad] text-sm">Upcoming</div>
@@ -204,7 +236,7 @@ function Inner() {
         </div>
       </div>
 
-      {/* Recent Changes feed */}
+      {/* Recent Changes */}
       <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
         <div className="text-[#dcdfe6] mb-3">Recent Changes</div>
         {recentChanges.length === 0 ? (
@@ -223,7 +255,7 @@ function Inner() {
         )}
       </div>
 
-      {/* Recent Appointments table */}
+      {/* Recent Appointments */}
       <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
         <div className="text-[#dcdfe6] mb-3">Recent Appointments</div>
         <div className="rounded-2xl overflow-hidden border border-[#22262e]">
@@ -247,7 +279,7 @@ function Inner() {
                 <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">No recent appointments</td></tr>
               ) : (
                 recent.map((r) => {
-                  const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0); // coalesce
+                  const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0);
                   return (
                     <tr key={r.id} className="border-t border-[#22262e]">
                       <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
