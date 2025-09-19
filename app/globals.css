@@ -1,20 +1,82 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-/* Theme tokens */
+/* --- Covex dark theme tokens --- */
 :root {
-  --cx-bg: #0a0a0b;
-  --cx-surface: #0f1115;
-  --cx-border: #22262e;
-  --cx-text: #dcdfe6;
-  --cx-muted: #9aa2ad;
-  --cx-accent: #3b82f6;
+  --bg: #0b0c0f;          /* page background */
+  --panel: #111318;       /* cards/panels */
+  --panel-2: #0f1116;     /* deeper panels */
+  --text: #e7e9ee;        /* default text */
+  --subtle: #a7adbb;      /* secondary text */
+  --border: #22262e;      /* borders */
+  --accent: #e5f5ff;      /* soft accent text */
+  --accent-strong: #0ea5e9; /* action */
+  --success: #22c55e;
+  --warning: #eab308;
+  --danger: #ef4444;
 }
 
-.bg-cx-bg { background-color: var(--cx-bg); }
-.bg-cx-surface { background-color: var(--cx-surface); }
-.text-cx-text { color: var(--cx-text); }
-.text-cx-muted { color: var(--cx-muted); }
-.border-cx-border { border-color: var(--cx-border); }
-.bg-cx-accent { background-color: var(--cx-accent); }
+/* Ensure body + cards are truly dark */
+html, body { background: var(--bg); color: var(--text); }
+.card, .panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+/* Recharts – force dark tooltips & labels */
+.recharts-default-tooltip {
+  background: var(--panel-2) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important;
+}
+.recharts-tooltip-label { color: var(--accent) !important; }
+.recharts-tooltip-item { color: var(--text) !important; }
+
+/* Recharts axes / grid */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: #1a1e26 !important;
+}
+.recharts-cartesian-axis-tick-value tspan {
+  fill: var(--subtle) !important;
+}
+
+/* Recharts dots + active dot halo for visibility */
+.recharts-line-dot circle { stroke: var(--accent-strong) !important; }
+.recharts-line-dot.active circle {
+  stroke-width: 2 !important;
+  filter: drop-shadow(0 0 8px rgba(14,165,233,.5));
+}
+
+/* Radix / shadcn Select – force contrast in dark */
+[data-radix-select-content],
+[data-radix-popper-content-wrapper] {
+  background: var(--panel-2) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  box-shadow: 0 12px 32px rgba(0,0,0,.55) !important;
+  border-radius: 10px !important;
+}
+[data-radix-select-viewport] { padding: 4px !important; }
+[data-radix-select-item] {
+  color: var(--text) !important;
+  border-radius: 8px !important;
+}
+[data-radix-select-item][data-highlighted],
+[data-radix-select-item][data-state="checked"] {
+  background: rgba(14,165,233,.15) !important;
+  color: var(--accent) !important;
+}
+
+/* Small status chips look cleaner with dark theme */
+.badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.badge.success { color: #baf7c8; border-color: rgba(34,197,94,.4); }
+.badge.warning { color: #ffe89a; border-color: rgba(234,179,8,.4); }
+.badge.muted   { color: var(--subtle); }
