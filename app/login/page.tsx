@@ -13,19 +13,12 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
 
   async function signIn() {
-    setBusy(true); setMsg(null);
+    setBusy(true);
+    setMsg(null);
     const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
     setBusy(false);
     if (error) setMsg(error.message);
     else router.replace("/dashboard");
-  }
-
-  async function signUp() {
-    setBusy(true); setMsg(null);
-    const { error } = await supabase.auth.signUp({ email, password: pw });
-    setBusy(false);
-    if (error) setMsg(error.message);
-    else setMsg("Check your email to confirm your account, then sign in.");
   }
 
   return (
@@ -36,26 +29,30 @@ export default function LoginPage() {
         <label className="block text-sm text-cx-muted mb-1">Email</label>
         <input
           className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-          type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
         />
 
         <label className="block text-sm text-cx-muted mb-1">Password</label>
         <input
           className="w-full mb-4 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-          type="password" value={pw} onChange={(e) => setPw(e.target.value)}
+          type="password"
+          value={pw}
+          onChange={(e) => setPw(e.target.value)}
+          autoComplete="current-password"
         />
 
-        {msg && <div className="text-sm text-red-400 mb-3">{msg}</div>}
+        {msg && <div className="text-sm text-rose-400 mb-3">{msg}</div>}
 
-        <div className="flex gap-2">
-          <button onClick={signIn} disabled={busy} className="btn-pill btn-pill--active">Sign in</button>
-          <button onClick={signUp} disabled={busy} className="btn-pill">Create account</button>
-        </div>
-
-        <p className="text-xs text-cx-muted mt-4">
-          Ensure <code className="text-white">NEXT_PUBLIC_SUPABASE_URL</code> and{" "}
-          <code className="text-white">NEXT_PUBLIC_SUPABASE_ANON_KEY</code> are set.
-        </p>
+        <button
+          onClick={signIn}
+          disabled={busy}
+          className="btn-pill btn-pill--active w-full justify-center"
+        >
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
       </div>
     </div>
   );
