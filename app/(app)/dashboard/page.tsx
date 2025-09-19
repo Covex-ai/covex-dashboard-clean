@@ -2,428 +2,211 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import {
-  fmtUSD,
-  priceFor,
-  serviceLabelFor,
-  normalizeService,
-  toNumber,
-  type NormalizedService,
-} from "@/lib/pricing";
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  BarChart,
-  Bar,
-} from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, BarChart, Bar } from "recharts";
+import RangePills from "@/components/RangePills";
+import { fmtUSD, normalizeService, priceFor, serviceLabelFor, toNumber, type NormalizedService } from "@/lib/pricing";
 
-type Row = {
+type Range = "7d" | "30d" | "90d";
+
+type ApptRow = {
   id: number;
+  business_uuid: string;
   start_ts: string; // ISO
-  service_raw: string | null;
-  normalized_service: NormalizedService | null;
+  end_ts: string | null;
   name: string | null;
   phone: string | null;
-  status: "Booked" | "Rescheduled" | "Cancelled" | string;
+  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | null;
+  service_raw: string | null;
+  normalized_service: NormalizedService | null;
   price_usd: number | string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
-
-type RangeKey = 7 | 30 | 90;
-const RANGE_OPTIONS: RangeKey[] = [7, 30, 90];
-
-function RangePills({
-  value,
-  onChange,
-}: {
-  value: RangeKey;
-  onChange: (v: RangeKey) => void;
-}) {
-  return (
-    <div className="flex gap-2">
-      {RANGE_OPTIONS.map((r) => (
-        <button
-          key={r}
-          onClick={() => onChange(r)}
-          className={`px-3 py-1.5 rounded-xl text-sm font-medium transition
-            ${value === r ? "bg-white/10 text-white" : "bg-white/5 text-white/70 hover:text-white"}`}
-        >
-          {r}d
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function Card({
-  title,
-  children,
-  right,
-}: {
-  title: string;
-  children: React.ReactNode;
-  right?: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-cx-border bg-cx-surface p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-sm font-medium text-white/80">{title}</div>
-        {right}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Metric({
-  title,
-  value,
-}: {
-  title: string;
-  value: string | number;
-}) {
-  return (
-    <div className="rounded-2xl border border-cx-border bg-cx-surface p-4">
-      <div className="text-sm font-medium text-white/70">{title}</div>
-      <div className="mt-2 text-3xl font-semibold tracking-tight text-white">
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function useBusinessId() {
-  const [bid, setBid] = useState<string | null>(null);
-  useEffect(() => {
-    const v =
-      window.localStorage.getItem("business_uuid") ??
-      window.localStorage.getItem("covex_business_uuid");
-    setBid(v);
-  }, []);
-  return bid;
-}
 
 export default function DashboardPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const businessId = useBusinessId();
+  const [range, setRange] = useState<Range>("90d");
+  const [rows, setRows] = useState<ApptRow[]>([]);
 
-  const [range, setRange] = useState<RangeKey>(90);
-  const [rowsAll, setRowsAll] = useState<Row[]>([]);
-  const [loading, setLoading] = useState(false);
+  function daysFor(r: Range) {
+    return r === "7d" ? 7 : r === "30d" ? 30 : 90;
+  }
 
-  // Load last 90d (we filter locally for 7/30)
+  async function load() {
+    const days = daysFor(range);
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+    const { data, error } = await supabase
+      .from("appointments")
+      .select("*")
+      .gte("start_ts", from.toISOString())
+      .order("start_ts", { ascending: true });
+    if (!error && data) setRows(data as any);
+  }
+
+  useEffect(() => { load(); }, [range]);
+
+  // realtime subscription
   useEffect(() => {
-    if (!businessId) return;
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        const since = new Date();
-        since.setDate(since.getDate() - 90);
-        const { data, error } = await supabase
-          .from("appointments")
-          .select(
-            "id,start_ts,service_raw,normalized_service,name,phone,status,price_usd"
-          )
-          .eq("business_id", businessId)
-          .gte("start_ts", since.toISOString())
-          .order("start_ts", { ascending: true });
+    const ch = supabase
+      .channel("rt-appointments")
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, (_payload) => load())
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, []);
 
-        if (error) throw error;
-        if (!cancelled) setRowsAll((data ?? []) as Row[]);
-      } catch (e) {
-        console.error(e);
-        if (!cancelled) setRowsAll([]);
-      } finally {
-        !cancelled && setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
+  // Totals (exclude Cancelled from revenue)
+  const totals = useMemo(() => {
+    const relevant = rows.filter((r) => r.status !== "Cancelled");
+    const revenue = relevant.reduce((sum, r) => {
+      const ns = r.normalized_service ?? normalizeService(r.service_raw);
+      return sum + priceFor(ns, toNumber(r.price_usd));
+    }, 0);
+    return {
+      bookings: rows.length,
+      revenue,
+      rescheduled: rows.filter((r) => r.status === "Rescheduled").length,
+      cancelled: rows.filter((r) => r.status === "Cancelled").length,
     };
-  }, [businessId, supabase]);
-
-  const rows = useMemo(() => {
-    const since = new Date();
-    since.setDate(since.getDate() - range);
-    return rowsAll.filter((r) => new Date(r.start_ts) >= since);
-  }, [rowsAll, range]);
-
-  // Metrics
-  const bookingsCount = useMemo(
-    () => rows.filter((r) => r.status !== "Cancelled").length,
-    [rows]
-  );
-  const rescheduledCount = useMemo(
-    () => rows.filter((r) => r.status === "Rescheduled").length,
-    [rows]
-  );
-  const cancelledCount = useMemo(
-    () => rows.filter((r) => r.status === "Cancelled").length,
-    [rows]
-  );
-
-  const revenue = useMemo(() => {
-    return rows
-      .filter((r) => r.status !== "Cancelled")
-      .reduce((sum, r) => {
-        const normalized: NormalizedService = (
-          r.normalized_service ?? normalizeService(r.service_raw ?? "")
-        ) as NormalizedService;
-        return sum + priceFor(normalized, toNumber(r.price_usd));
-      }, 0);
   }, [rows]);
 
-  // Bookings per day
-  const bookingsByDay = useMemo(() => {
-    const start = new Date();
-    start.setDate(start.getDate() - range + 1);
-    start.setHours(0, 0, 0, 0);
-
-    const fmt = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`;
+  // Bookings per day series
+  const bookingsSeries = useMemo(() => {
+    const days = daysFor(range);
     const map = new Map<string, number>();
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(5, 10); // MM-DD
+      map.set(key, 0);
+    }
     for (const r of rows) {
       const d = new Date(r.start_ts);
-      const key = fmt(d);
-      map.set(key, (map.get(key) ?? 0) + 1);
+      const key = d.toISOString().slice(5, 10);
+      if (map.has(key)) map.set(key, (map.get(key) ?? 0) + 1);
     }
-
-    const days: { day: string; count: number }[] = [];
-    const iter = new Date(start);
-    for (let i = 0; i < range; i++) {
-      const key = fmt(iter);
-      days.push({ day: key, count: map.get(key) ?? 0 });
-      iter.setDate(iter.getDate() + 1);
-    }
-    return days;
+    return Array.from(map.entries()).map(([date, count]) => ({ date, count }));
   }, [rows, range]);
 
-  // Revenue by service
+  // Revenue by service series (exclude Cancelled)
   const revenueByService = useMemo(() => {
-    const sums = new Map<NormalizedService, number>();
+    const sums = new Map<NormalizedService | "OTHER", number>();
+    const add = (k: NormalizedService | "OTHER", v: number) => sums.set(k, (sums.get(k) ?? 0) + v);
+
     for (const r of rows) {
       if (r.status === "Cancelled") continue;
-      const s: NormalizedService = (
-        r.normalized_service ?? normalizeService(r.service_raw ?? "")
-      ) as NormalizedService; // <- ensure Map key type is satisfied
-      const v = priceFor(s, toNumber(r.price_usd));
-      sums.set(s, (sums.get(s) ?? 0) + v);
+      const s = r.normalized_service ?? normalizeService(r.service_raw) ?? "OTHER";
+      const v = priceFor(s === "OTHER" ? null : s, toNumber(r.price_usd));
+      add(s, v);
     }
-    const out = Array.from(sums.entries()).map(([s, v]) => ({
-      service: serviceLabelFor(s, null),
+    return Array.from(sums.entries()).map(([s, v]) => ({
+      service: s === "OTHER" ? (rLabel("OTHER")) : serviceLabelFor(s as NormalizedService, null),
       revenue: v,
     }));
-    out.sort((a, b) => a.service.localeCompare(b.service));
-    return out;
+
+    function rLabel(key: "OTHER") { return "Other"; }
   }, [rows]);
 
-  // Tooltip styles (dark)
-  const tooltipStyle =
-    "rounded-xl border border-cx-border bg-[#0b0b0c] px-3 py-2 shadow-xl";
-  const tooltipLabel = "text-[13px] text-white/80";
-  const tooltipValue = "mt-1 text-[13px] font-semibold text-white";
-
   return (
-    <div className="mx-auto max-w-[1200px] px-6 py-6">
-      {/* Top metrics */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-        <Metric title={`Bookings (${range}d)`} value={bookingsCount} />
-        <Metric title={`Revenue (${range}d)`} value={fmtUSD(revenue)} />
-        <Metric title={`Rescheduled (${range}d)`} value={rescheduledCount} />
-        <Metric title={`Cancelled (${range}d)`} value={cancelledCount} />
+    <div className="space-y-6">
+      {/* Top stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <StatCard title={`Bookings (${range})`} value={totals.bookings} />
+        <StatCard title={`Revenue (${range})`} value={fmtUSD(totals.revenue)} />
+        <StatCard title={`Rescheduled (${range})`} value={totals.rescheduled} />
+        <StatCard title={`Cancelled (${range})`} value={totals.cancelled} />
       </div>
 
       {/* Charts */}
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card
-          title={`Bookings per day (last ${range} days)`}
-          right={<RangePills value={range} onChange={setRange} />}
-        >
-          <div className="h-[300px]">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold">Bookings per day (last {range})</h3>
+            <RangePills value={range} onChange={setRange} />
+          </div>
+          <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={bookingsByDay}>
-                <CartesianGrid
-                  stroke="#2a2e36"
-                  strokeDasharray="4 4"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="day"
-                  stroke="#7f8796"
-                  tick={{ fill: "#7f8796", fontSize: 12 }}
-                />
-                <YAxis
-                  allowDecimals={false}
-                  stroke="#7f8796"
-                  tick={{ fill: "#7f8796", fontSize: 12 }}
-                />
-                <Tooltip
-                  content={({ label, payload }) => (
-                    <div className={tooltipStyle}>
-                      <div className={tooltipLabel}>{label}</div>
-                      <div className={tooltipValue}>
-                        bookings:{" "}
-                        {payload?.[0]?.value != null
-                          ? (payload[0].value as number)
-                          : 0}
-                      </div>
-                    </div>
-                  )}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#e5e7eb"
-                  strokeWidth={2}
-                  dot={{ r: 3, stroke: "#0b0b0c", fill: "#e5e7eb" }}
-                  activeDot={{ r: 4 }}
-                />
+              <LineChart data={bookingsSeries}>
+                <CartesianGrid vertical={false} stroke="#1a1a1a" />
+                <XAxis dataKey="date" tickMargin={8} />
+                <YAxis allowDecimals={false} width={24} />
+                <Tooltip formatter={(v: any) => [`Bookings: ${v}`, ""]} />
+                <Line type="monotone" dataKey="count" stroke="#ffffff" dot={{ r: 3, fill: "#ffffff" }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
-        </Card>
+        </div>
 
-        <Card
-          title={`Revenue by service (last ${range} days)`}
-          right={<RangePills value={range} onChange={setRange} />}
-        >
-          <div className="h-[300px]">
+        <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="font-semibold">Revenue by service (last {range})</h3>
+            <RangePills value={range} onChange={setRange} />
+          </div>
+          <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={revenueByService} barSize={36}>
-                <CartesianGrid
-                  stroke="#2a2e36"
-                  strokeDasharray="4 4"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="service"
-                  tick={{ fill: "#7f8796", fontSize: 12 }}
-                  stroke="#7f8796"
-                />
-                <YAxis
-                  tick={{ fill: "#7f8796", fontSize: 12 }}
-                  stroke="#7f8796"
-                />
-                <Tooltip
-                  content={({ label, payload }) => (
-                    <div className={tooltipStyle}>
-                      <div className={tooltipLabel}>{label}</div>
-                      <div className={tooltipValue}>
-                        {fmtUSD(toNumber(payload?.[0]?.value) ?? 0)}
-                      </div>
-                    </div>
-                  )}
-                />
-                <Bar dataKey="revenue" fill="#e5e7eb" radius={[8, 8, 0, 0]} />
+              <BarChart data={revenueByService}>
+                <CartesianGrid vertical={false} stroke="#1a1a1a" />
+                <XAxis dataKey="service" interval={0} angle={0} tickMargin={12} />
+                <YAxis width={40} />
+                <Tooltip formatter={(v: any) => [fmtUSD(Number(v)), ""]} />
+                <Bar dataKey="revenue" fill="#ffffff" radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
-        </Card>
+        </div>
       </div>
 
-      {/* Recent appointments */}
-      <div className="mt-6">
-        <Card title="Recent appointments">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-white/60">
-                  <th className="px-4 py-2">Date</th>
-                  <th className="px-4 py-2">Time</th>
-                  <th className="px-4 py-2">Service</th>
-                  <th className="px-4 py-2">Name</th>
-                  <th className="px-4 py-2">Phone</th>
-                  <th className="px-4 py-2">Status</th>
-                  <th className="px-4 py-2">Price</th>
+      {/* Recent table (simplified) */}
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+        <h3 className="font-semibold mb-3">Recent appointments</h3>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-cx-muted">
+              <tr className="text-left">
+                <th className="py-2 pr-4">Date</th>
+                <th className="py-2 pr-4">Time</th>
+                <th className="py-2 pr-4">Service</th>
+                <th className="py-2 pr-4">Name</th>
+                <th className="py-2 pr-4">Phone</th>
+                <th className="py-2 pr-4">Status</th>
+                <th className="py-2 pr-4">Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(-10).map((r) => {
+                const ns = r.normalized_service ?? normalizeService(r.service_raw);
+                return (
+                  <tr key={r.id} className="border-t border-cx-border">
+                    <td className="py-2 pr-4">{new Date(r.start_ts).toLocaleDateString()}</td>
+                    <td className="py-2 pr-4">{new Date(r.start_ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</td>
+                    <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
+                    <td className="py-2 pr-4">{r.name ?? "-"}</td>
+                    <td className="py-2 pr-4">{r.phone ?? "-"}</td>
+                    <td className="py-2 pr-4">{r.status ?? "-"}</td>
+                    <td className="py-2 pr-4">{fmtUSD(priceFor(ns, toNumber(r.price_usd)))}</td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr>
+                  <td className="py-6 text-center text-cx-muted" colSpan={7}>
+                    No appointments in the selected range.
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td
-                      colSpan={7}
-                      className="px-4 py-8 text-center text-white/60"
-                    >
-                      Loading…
-                    </td>
-                  </tr>
-                ) : rows.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={7}
-                      className="px-4 py-8 text-center text-white/60"
-                    >
-                      No appointments in the selected range.
-                    </td>
-                  </tr>
-                ) : (
-                  rows
-                    .slice()
-                    .reverse()
-                    .slice(0, 10)
-                    .map((r) => {
-                      const d = new Date(r.start_ts);
-                      const date = d.toLocaleDateString(undefined, {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      });
-                      const time = d.toLocaleTimeString(undefined, {
-                        hour: "numeric",
-                        minute: "2-digit",
-                      });
-
-                      const normalized: NormalizedService = (
-                        r.normalized_service ??
-                        normalizeService(r.service_raw ?? "")
-                      ) as NormalizedService;
-
-                      const price = priceFor(normalized, toNumber(r.price_usd));
-                      const label = serviceLabelFor(
-                        normalized,
-                        r.service_raw
-                      );
-
-                      const badge =
-                        r.status === "Cancelled"
-                          ? "bg-red-500/15 text-red-300"
-                          : r.status === "Rescheduled"
-                          ? "bg-yellow-500/15 text-yellow-300"
-                          : "bg-emerald-500/15 text-emerald-300";
-
-                      return (
-                        <tr
-                          key={r.id}
-                          className="border-t border-cx-border text-white/90"
-                        >
-                          <td className="px-4 py-3">{date}</td>
-                          <td className="px-4 py-3">{time}</td>
-                          <td className="px-4 py-3">{label}</td>
-                          <td className="px-4 py-3">{r.name ?? "-"}</td>
-                          <td className="px-4 py-3">{r.phone ?? "-"}</td>
-                          <td className="px-4 py-3">
-                            <span
-                              className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${badge}`}
-                            >
-                              {r.status || "Booked"}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3">
-                            {r.status === "Cancelled" ? "-" : fmtUSD(price)}
-                          </td>
-                        </tr>
-                      );
-                    })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
+    </div>
+  );
+}
+
+function StatCard({ title, value }: { title: string; value: string | number }) {
+  return (
+    <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+      <div className="text-cx-muted text-sm mb-1">{title}</div>
+      <div className="text-2xl font-semibold">{value}</div>
     </div>
   );
 }
