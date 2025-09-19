@@ -1,47 +1,79 @@
-export const SERVICE_LABELS: Record<string, string> = {
+// lib/pricing.ts
+
+// ---- Types ---------------------------------------------------------------
+
+export type NormalizedService =
+  | "ACUTE_30"
+  | "STANDARD_30"
+  | "NEW_PATIENT_60";
+
+// ---- Human labels --------------------------------------------------------
+
+export const SERVICE_LABEL: Record<NormalizedService, string> = {
   ACUTE_30: "Acute pain / emergency adjustment",
-  STANDARD: "Standard adjustment + soft tissue (established)",
-  NEW_PT: "New patient exam + X-rays + adjustment",
+  STANDARD_30: "Standard adjustment + soft tissue",
+  NEW_PATIENT_60: "New patient exam + X-rays + adjustment",
 };
 
-export const SERVICE_PRICE_USD: Record<string, number> = {
+// ---- Default prices (USD) ------------------------------------------------
+// You can tweak these numbers any time.
+export const SERVICE_PRICE_USD: Record<NormalizedService, number> = {
   ACUTE_30: 75,
-  STANDARD: 90,
-  NEW_PT: 120,
+  STANDARD_30: 95,
+  NEW_PATIENT_60: 145,
 };
 
-export function normalizeService(input?: string | null): keyof typeof SERVICE_PRICE_USD | undefined {
-  if (!input) return undefined;
-  const s = input.toLowerCase();
+// ---- Helpers -------------------------------------------------------------
 
-  if (s.includes("acute")) return "ACUTE_30";
-  if (s.includes("standard")) return "STANDARD";
-  if (s.includes("new patient") || s.includes("x-ray") || s.includes("x-rays")) return "NEW_PT";
-
-  // fallbacks for codes like ACUTE_30, STANDARD, NEW_PT
-  if (s.includes("acute_30")) return "ACUTE_30";
-  if (s.includes("standard")) return "STANDARD";
-  if (s.includes("new_pt")) return "NEW_PT";
-  return undefined;
+/**
+ * Safely coerce unknown -> number (or null).
+ * Accepts numbers or numeric strings like "75" or "75.00".
+ */
+export function toNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
-export function serviceLabelFor(normalized?: string, raw?: string | null) {
-  if (normalized && SERVICE_LABELS[normalized]) return SERVICE_LABELS[normalized];
-  return raw ?? "—";
+/**
+ * Format a number as USD currency. Returns "-" for null/undefined.
+ */
+export function fmtUSD(v: number | null | undefined): string {
+  const n = typeof v === "number" ? v : null;
+  if (n === null) return "-";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(n);
 }
 
-export function toNumber(x: unknown): number | null {
-  if (x === null || x === undefined) return null;
-  const n = typeof x === "string" ? parseFloat(x) : (x as number);
-  return Number.isFinite(n) ? n : null;
-}
-
+/**
+ * Get a price for a normalized service.
+ * If a per-row price exists (fallback) we honor it; otherwise use the defaults.
+ */
 export function priceFor(
-  normalized?: keyof typeof SERVICE_PRICE_USD,
-  override?: number | string | null
+  normalized: NormalizedService | null | undefined,
+  fallback?: number | string | null
 ): number {
-  const over = toNumber(override);
-  if (over !== null) return over;
-  if (normalized && SERVICE_PRICE_USD[normalized] !== undefined) return SERVICE_PRICE_USD[normalized];
-  return 0;
+  const maybe = toNumber(fallback);
+  if (maybe !== null) return maybe;
+
+  if (!normalized) return 0;
+  return SERVICE_PRICE_USD[normalized] ?? 0;
+}
+
+/**
+ * Resolve a user-facing label for the service.
+ * If we have a normalized code, return our curated label; otherwise use the raw text.
+ */
+export function serviceLabelFor(
+  normalized: NormalizedService | null | undefined,
+  raw?: string | null
+): string {
+  if (normalized && SERVICE_LABEL[normalized]) return SERVICE_LABEL[normalized];
+  return raw?.trim() || "—";
 }
