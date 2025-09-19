@@ -13,7 +13,7 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-// Put your real logo at /public/brand-logo.png (PNG or SVG)
+// Put your real logo at /public/brand-logo.png (PNG or SVG; a light/white version looks best on black)
 const LOGO_SRC = "/brand-logo.png";
 
 export default function Sidebar() {
@@ -29,21 +29,21 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Header stays 64px (h-16). Logo fills that height. */}
-      <div className="h-16 px-5 flex items-center gap-3 border-b border-cx-border">
+      {/* Taller header to accommodate a much bigger logo */}
+      <div className="h-24 px-5 flex items-center gap-3 border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
             alt="COVEX"
-            width={1200}              // large intrinsic size for crisp downscale
-            height={300}
-            className="opacity-95 h-16 w-auto object-contain"  // 👈 64px tall (max)
+            width={2400}              // high intrinsic size for crisp downscale
+            height={600}
+            className="opacity-95 h-20 w-auto object-contain" // 80px-tall logo
             priority
             draggable={false}
             onError={() => setLogoOk(false)}
           />
         ) : (
-          <span className="text-3xl font-semibold tracking-[0.35em] text-white">
+          <span className="text-4xl font-semibold tracking-[0.35em] text-white">
             COVEX
           </span>
         )}
