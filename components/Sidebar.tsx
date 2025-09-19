@@ -2,7 +2,9 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useMemo } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const links = [
   { href: "/dashboard", label: "Overview" },
@@ -13,6 +15,13 @@ const links = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const supabase = useMemo(() => createBrowserClient(), []);
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
@@ -26,9 +35,6 @@ export default function Sidebar() {
           className="opacity-90"
           priority
         />
-        {/* If SVG missing, fallback text:
-        <span className="font-semibold tracking-[0.2em] text-white">COVEX</span>
-        */}
       </div>
 
       <nav className="flex-1 p-3">
@@ -49,8 +55,11 @@ export default function Sidebar() {
         })}
       </nav>
 
-      <div className="p-4 border-t border-cx-border text-xs text-cx-muted">
-        © {new Date().getFullYear()} Covex
+      <div className="p-4 border-t border-cx-border">
+        <button onClick={signOut} className="btn-pill w-full text-left">
+          Sign out
+        </button>
+        <div className="text-xs text-cx-muted mt-3">© {new Date().getFullYear()} Covex</div>
       </div>
     </aside>
   );
