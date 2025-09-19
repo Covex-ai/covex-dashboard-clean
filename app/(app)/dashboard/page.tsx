@@ -1,241 +1,259 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, Suspense } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import { priceFor, fmtUSD, serviceLabelFor } from "@/lib/pricing";
-
+import Stat from "@/components/Stat";
+import Segmented from "@/components/Segmented";
+import { ChartTooltip } from "@/components/ChartTooltip";
 import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
-  BarChart, Bar
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  BarChart,
+  Bar,
 } from "recharts";
+import { priceFor, serviceLabelFor } from "@/lib/pricing";
 
-// ---- Types ----
 type Row = {
-  id: string;
-  start_ts: string;                // ISO
+  id: number;
+  business_id: string;
+  start_ts: string;
+  status: "Booked" | "Rescheduled" | "Cancelled";
   normalized_service: string | null;
   service_raw: string | null;
-  name: string | null;
-  phone: string | null;
-  source: string | null;
-  status: "Booked" | "Rescheduled" | "Cancelled" | string;
-  price_usd: number | string | null;
+  price_usd: string | number | null;
 };
 
-function toNumber(n: number | string | null | undefined): number | null {
-  if (n === null || n === undefined) return null;
-  const num = typeof n === "string" ? Number(n) : n;
-  return Number.isFinite(num) ? num : null;
-}
+const toNumber = (v: string | number | null | undefined): number =>
+  typeof v === "number" ? v : v ? Number(v) : 0;
 
 export default function DashboardPage() {
+  return (
+    <Suspense>
+      <Content />
+    </Suspense>
+  );
+}
+
+function Content() {
+  const supabase = useMemo(() => createBrowserClient(), []);
   const [rows, setRows] = useState<Row[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState<"7" | "30" | "90">("30");
 
   useEffect(() => {
-    const supabase = createBrowserClient();
+    let isMounted = true;
+    (async () => {
+      // last 90 days, we’ll filter in-memory for the segmented control
+      const from = new Date();
+      from.setDate(from.getDate() - 90);
 
-    // Last 90 days so we can roll different windows if needed
-    const start = new Date();
-    start.setDate(start.getDate() - 90);
+      const { data, error } = await supabase
+        .from("appointments")
+        .select(
+          "id,business_id,start_ts,status,normalized_service,service_raw,price_usd"
+        )
+        .gte("start_ts", from.toISOString())
+        .order("start_ts", { ascending: true });
 
-    supabase
-      .from("appointments")
-      .select(
-        "id,start_ts,normalized_service,service_raw,name,phone,source,status,price_usd"
-      )
-      .gte("start_ts", start.toISOString())
-      .order("start_ts", { ascending: true })
-      .then(({ data, error }) => {
-        if (!error && data) setRows(data as Row[]);
-        setLoading(false);
-      });
-  }, []);
+      if (!isMounted) return;
+      if (!error && data) setRows(data as unknown as Row[]);
+    })();
+    return () => {
+      isMounted = false;
+    };
+  }, [supabase]);
 
-  // ---- Derived metrics (last 30 days) ----
-  const last30Rows = useMemo(() => {
-    const start = new Date();
-    start.setDate(start.getDate() - 30);
-    return rows.filter(r => new Date(r.start_ts) >= start);
-  }, [rows]);
+  const days = range === "7" ? 7 : range === "90" ? 90 : 30;
+  const since = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    return d;
+  }, [days]);
 
-  const bookings30 = last30Rows.length;
-  const rescheduled30 = last30Rows.filter(r => r.status === "Rescheduled").length;
-  const cancelled30 = last30Rows.filter(r => r.status === "Cancelled").length;
+  const visible = useMemo(
+    () => rows.filter((r) => new Date(r.start_ts) >= since),
+    [rows, since]
+  );
 
-  const revenue30 = useMemo(() => {
-    return last30Rows
-      .filter(r => r.status !== "Cancelled")
-      .reduce((sum, r) => {
-        const px = priceFor(r.normalized_service, toNumber(r.price_usd));
-        return sum + (px ?? 0);
-      }, 0);
-  }, [last30Rows]);
-
-  // ---- Chart: Bookings per day (30d) ----
-  const bookingsPerDay = useMemo(() => {
-    const today = new Date();
-    const labels = Array.from({ length: 30 }).map((_, i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() - (29 - i));
-      return `${d.getMonth() + 1}/${d.getDate()}`;
-    });
-
-    return labels.map((lab) => {
-      const count = last30Rows.filter(r => {
-        const dt = new Date(r.start_ts);
-        const label = `${dt.getMonth() + 1}/${dt.getDate()}`;
-        return label === lab;
-      }).length;
-      return { day: lab, count };
-    });
-  }, [last30Rows]);
-
-  // ---- Chart: Revenue by service (30d, exclude Cancelled) ----
-  const revenueByService = useMemo(() => {
-    const map = new Map<string, number>();
-    last30Rows
-      .filter(r => r.status !== "Cancelled")
-      .forEach(r => {
-        const label = serviceLabelFor(r.normalized_service, r.service_raw);
-        const px = priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0;
-        map.set(label, (map.get(label) ?? 0) + px);
-      });
-
-    // stable sort by revenue desc
-    return Array.from(map.entries())
-      .map(([service, revenue]) => ({ service, revenue }))
-      .sort((a, b) => b.revenue - a.revenue);
-  }, [last30Rows]);
-
-  if (loading) {
-    return (
-      <div className="p-6 text-cx-muted">Loading…</div>
+  // Stats
+  const bookings = visible.length;
+  const revenue = visible
+    .filter((r) => r.status !== "Cancelled")
+    .reduce(
+      (sum, r) => sum + priceFor(r.normalized_service, toNumber(r.price_usd)),
+      0
     );
-  }
+  const rescheduled = visible.filter((r) => r.status === "Rescheduled").length;
+  const cancelled = visible.filter((r) => r.status === "Cancelled").length;
+
+  // Bookings per day (line with dots)
+  const byDay = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < days; i++) {
+      const d = new Date(since);
+      d.setDate(d.getDate() + i);
+      const key = d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
+      map.set(key, 0);
+    }
+    for (const r of visible) {
+      const d = new Date(r.start_ts);
+      const key = d.toLocaleDateString(undefined, { month: "numeric", day: "numeric" });
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return Array.from(map.entries()).map(([date, bookings]) => ({
+      date,
+      bookings,
+    }));
+  }, [visible, days, since]);
+
+  // Revenue by service (bar)
+  const byService = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of visible) {
+      if (r.status === "Cancelled") continue;
+      const label = serviceLabelFor(r.normalized_service, r.service_raw);
+      map.set(
+        label,
+        (map.get(label) ?? 0) + priceFor(r.normalized_service, toNumber(r.price_usd))
+      );
+    }
+    return Array.from(map.entries()).map(([service, revenue]) => ({
+      service,
+      revenue,
+    }));
+  }, [visible]);
 
   return (
-    <div className="flex">
-      {/* Sidebar is rendered by layout wrapper; this is the content area */}
-      <div className="flex-1 min-h-screen bg-cx-bg">
-        <div className="max-w-7xl mx-auto p-6 space-y-6">
+    <div className="p-6 space-y-6">
+      {/* Stat tiles */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Stat title={`Bookings (${days}d)`} value={bookings} />
+        <Stat title={`Revenue (${days}d)`} value={`$${revenue}`} />
+        <Stat title={`Rescheduled (${days}d)`} value={rescheduled} />
+        <Stat title={`Cancelled (${days}d)`} value={cancelled} />
+      </div>
 
-          {/* -- KPIs -- */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-cx-surface border border-cx-border rounded-xl p-4">
-              <div className="text-sm text-cx-muted mb-1">Bookings (30d)</div>
-              <div className="text-3xl font-semibold">{bookings30}</div>
-            </div>
-            <div className="bg-cx-surface border border-cx-border rounded-xl p-4">
-              <div className="text-sm text-cx-muted mb-1">Revenue (30d)</div>
-              <div className="text-3xl font-semibold">{fmtUSD(revenue30)}</div>
-            </div>
-            <div className="bg-cx-surface border border-cx-border rounded-xl p-4">
-              <div className="text-sm text-cx-muted mb-1">Rescheduled (30d)</div>
-              <div className="text-3xl font-semibold">{rescheduled30}</div>
-            </div>
-            <div className="bg-cx-surface border border-cx-border rounded-xl p-4">
-              <div className="text-sm text-cx-muted mb-1">Cancelled (30d)</div>
-              <div className="text-3xl font-semibold">{cancelled30}</div>
-            </div>
+      {/* Range segmented + charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="card p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm text-cx-muted">Bookings per day (last {days} days)</div>
+            <Segmented
+              value={range}
+              onChange={(v) => setRange(v as any)}
+              options={[
+                { key: "7", label: "7d" },
+                { key: "30", label: "30d" },
+                { key: "90", label: "90d" },
+              ]}
+            />
           </div>
 
-          {/* -- Charts -- */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Bookings per day (line + dots) */}
-            <div className="bg-cx-surface border border-cx-border rounded-xl p-4 h-[320px]">
-              <div className="text-sm text-cx-muted mb-3">Bookings per day (last 30 days)</div>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={bookingsPerDay}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="day" tickMargin={8} />
-                  <YAxis allowDecimals={false} tickMargin={8} />
-                  <Tooltip
-                    contentStyle={{ background: "#0f1116", borderColor: "#22262e" }}
-                    labelStyle={{ color: "#e5f5ff" }}
-                    formatter={(v: number) => [v, "Bookings"]}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="count"
-                    stroke="#e7e9ee"
-                    strokeWidth={2}
-                    dot={{ r: 4, stroke: "#0ea5e9", strokeWidth: 2 }}
-                    activeDot={{ r: 6, fill: "#0ea5e9" }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Revenue by service (bar) */}
-            <div className="bg-cx-surface border border-cx-border rounded-xl p-4 h-[320px]">
-              <div className="text-sm text-cx-muted mb-3">Revenue by service (last 30 days)</div>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={revenueByService} barSize={28}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="service" interval={0} tickMargin={10} />
-                  <YAxis tickMargin={8} />
-                  <Tooltip
-                    contentStyle={{ background: "#0f1116", borderColor: "#22262e" }}
-                    labelStyle={{ color: "#e5f5ff" }}
-                    formatter={(v: number) => [`${fmtUSD(v)}`, "Revenue"]}
-                  />
-                  <Bar dataKey="revenue" fill="#e7e9ee" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+          <div className="h-[280px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={byDay} margin={{ left: 8, right: 8, top: 10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="date" />
+                <YAxis allowDecimals={false} />
+                <Tooltip
+                  content={({ label, payload }) => (
+                    <ChartTooltip
+                      label={label}
+                      items={(payload ?? []).map((p) => ({
+                        name: "Bookings",
+                        value: (p?.value as number) ?? 0,
+                      }))}
+                    />
+                  )}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="bookings"
+                  stroke="var(--cx-accent)"
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  activeDot={{ r: 5 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
-
-          {/* -- Recent appointments -- */}
-          <div className="bg-cx-surface border border-cx-border rounded-xl p-4">
-            <div className="text-sm text-cx-muted mb-3">Recent appointments</div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-cx-muted">
-                    <th className="px-4 py-2">Date</th>
-                    <th className="px-4 py-2">Time</th>
-                    <th className="px-4 py-2">Service</th>
-                    <th className="px-4 py-2">Name</th>
-                    <th className="px-4 py-2">Phone</th>
-                    <th className="px-4 py-2">Status</th>
-                    <th className="px-4 py-2">Price</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {last30Rows.slice(-10).reverse().map((r) => {
-                    const dt = new Date(r.start_ts);
-                    const date = dt.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
-                    const time = dt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-                    const label = serviceLabelFor(r.normalized_service, r.service_raw);
-                    const price = priceFor(r.normalized_service, toNumber(r.price_usd));
-                    const statusClass =
-                      r.status === "Cancelled"
-                        ? "badge"
-                        : r.status === "Rescheduled"
-                        ? "badge warning"
-                        : "badge success";
-
-                    return (
-                      <tr key={r.id} className="border-t border-cx-border">
-                        <td className="px-4 py-3">{date}</td>
-                        <td className="px-4 py-3">{time}</td>
-                        <td className="px-4 py-3">{label}</td>
-                        <td className="px-4 py-3">{r.name ?? "-"}</td>
-                        <td className="px-4 py-3">{r.phone ?? "-"}</td>
-                        <td className="px-4 py-3">
-                          <span className={statusClass}>{r.status}</span>
-                        </td>
-                        <td className="px-4 py-3">{price == null ? "-" : fmtUSD(price)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
         </div>
+
+        <div className="card p-4">
+          <div className="text-sm text-cx-muted mb-2">Revenue by service (last {days} days)</div>
+          <div className="h-[280px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={byService} margin={{ left: 8, right: 8, top: 10, bottom: 20 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="service" interval={0} angle={0} tickMargin={12} />
+                <YAxis />
+                <Tooltip
+                  content={({ label, payload }) => (
+                    <ChartTooltip
+                      label={label}
+                      items={(payload ?? []).map((p) => ({
+                        name: "Revenue",
+                        value: `$${(p?.value as number) ?? 0}`,
+                      }))}
+                    />
+                  )}
+                />
+                <Bar dataKey="revenue" fill="var(--cx-accent)" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      {/* Recent table */}
+      <div className="card p-4">
+        <div className="text-sm text-cx-muted mb-3">Recent appointments</div>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Time</th>
+              <th>Service</th>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Status</th>
+              <th>Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible
+              .slice()
+              .reverse()
+              .slice(0, 10)
+              .map((r) => {
+                const d = new Date(r.start_ts);
+                const price = priceFor(r.normalized_service, toNumber(r.price_usd));
+                const label = serviceLabelFor(r.normalized_service, r.service_raw);
+                const pillClass =
+                  r.status === "Cancelled"
+                    ? "pill pill--bad"
+                    : r.status === "Rescheduled"
+                    ? "pill pill--warn"
+                    : "pill pill--ok";
+
+                return (
+                  <tr key={r.id} className={r.status === "Cancelled" ? "opacity-70" : ""}>
+                    <td>{d.toLocaleDateString()}</td>
+                    <td>{d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</td>
+                    <td className="text-cx-text">{label}</td>
+                    <td>-</td>
+                    <td>-</td>
+                    <td><span className={pillClass}>{r.status}</span></td>
+                    <td>{price ? `$${price}` : "-"}</td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
