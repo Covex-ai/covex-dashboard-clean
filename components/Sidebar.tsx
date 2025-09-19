@@ -13,7 +13,7 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-// Put your actual logo at /public/brand-logo.png (PNG or SVG)
+// Put your actual logo file at /public/brand-logo.png (PNG or SVG, light/white recommended)
 const LOGO_SRC = "/brand-logo.png";
 
 export default function Sidebar() {
@@ -29,14 +29,15 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
+      {/* Header stays h-16; just render a taller logo inside */}
       <div className="h-16 px-5 flex items-center gap-3 border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
             alt="COVEX"
-            width={140}
-            height={28}
-            className="opacity-90 h-6 w-auto"
+            width={240}
+            height={48}
+            className="opacity-90 h-9 w-auto" // ↑ bigger logo (36px tall) without changing header height
             priority
             onError={() => setLogoOk(false)}
           />
