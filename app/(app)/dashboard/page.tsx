@@ -1,124 +1,100 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import { createBrowserClient } from '@/lib/supabaseBrowser';
-import { priceFor, fmtUSD } from '@/lib/pricing';
-import StatusBadge, { ApptStatus } from '@/components/StatusBadge';
-import { When } from '@/components/When';
 import {
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, CartesianGrid,
-} from 'recharts';
+  fmtUSD,
+  priceFor,
+  serviceLabelFor,
+  toNumber,
+  NormalizedService,
+} from '@/lib/pricing';
 
 type Row = {
   id: number;
   business_id: string;
-  booking_id: string;
-  status: ApptStatus | string;
+  booking_id: string | null;
+  status: 'Booked' | 'Rescheduled' | 'Cancelled' | 'Inquiry';
   source: string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
   service_raw: string | null;
-  normalized_service: 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60' | null;
-  start_ts: string;
+  normalized_service: NormalizedService;
+  start_ts: string; // timestamptz
   end_ts: string | null;
-  price_usd: string | number | null; // numeric -> string
-  created_at?: string | null;
-  updated_at?: string | null;
+  received_date: string | null;
+  price_usd: string | number | null;
 };
 
-function fmtDate(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+function fmtDate(ts: string) {
+  const d = new Date(ts);
+  return d.toLocaleDateString(undefined, {
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+  });
 }
-function fmtTime(iso: string) {
-  const d = new Date(iso);
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+function fmtTime(ts: string) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
-function toNumber(v: number | string | null | undefined): number | null {
-  if (v === null || v === undefined) return null;
-  const n = typeof v === 'number' ? v : parseFloat(v);
-  return Number.isFinite(n) ? n : null;
+function prettyPhone(e164?: string | null) {
+  if (!e164) return '—';
+  const m = e164.match(/^\+?1?(\d{3})(\d{3})(\d{4})$/);
+  if (m) return `+1 (${m[1]}) ${m[2]}-${m[3]}`;
+  return e164;
 }
 
-function Inner() {
+export default function DashboardPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const params = useSearchParams();
-
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
-  const [biz, setBiz] = useState<string | null>(null);
 
-  // Resolve business
   useEffect(() => {
-    const bizParam = params.get('biz');
-    if (bizParam) {
-      setBiz(bizParam);
-      return;
-    }
-    (async () => {
-      const { data: u } = await supabase.auth.getUser();
-      const uid = u.user?.id;
-      if (!uid) {
-        setBiz(null);
-        return;
-      }
-      const { data } = await supabase
-        .from('profiles')
-        .select('business_id')
-        .eq('id', uid)
-        .maybeSingle();
-      setBiz((data?.business_id as string) ?? null);
-    })();
-  }, [params, supabase]);
+    let canceled = false;
 
-  // Initial load
-  useEffect(() => {
-    (async () => {
+    async function load() {
       setLoading(true);
-      const from = new Date(Date.now() - 30 * 864e5).toISOString();
+      // grab last ~120 days for charts + table
+      const since = new Date();
+      since.setDate(since.getDate() - 120);
 
-      let query = supabase
+      const { data, error } = await supabase
         .from('appointments')
         .select(
-          'id,business_id,booking_id,status,source,caller_name,caller_phone_e164,service_raw,normalized_service,start_ts,end_ts,price_usd,created_at,updated_at'
+          'id,business_id,booking_id,status,source,caller_name,caller_phone_e164,service_raw,normalized_service,start_ts,end_ts,received_date,price_usd'
         )
-        .gte('start_ts', from)
-        .order('start_ts', { ascending: true });
+        .gte('start_ts', since.toISOString())
+        .order('start_ts', { ascending: false })
+        .limit(1200);
 
-      if (biz) query = query.eq('business_id', biz);
+      if (!canceled) {
+        if (error) console.error(error);
+        setRows((data ?? []) as Row[]);
+        setLoading(false);
+      }
+    }
 
-      const { data, error } = await query;
-      if (!error && data) setRows(data as Row[]);
-      setLoading(false);
-    })();
-  }, [supabase, biz]);
+    load();
 
-  // Realtime subscription
-  useEffect(() => {
-    if (!biz) return;
-
-    const channel = supabase
-      .channel(`dashboard-appointments-${biz}`)
+    // realtime
+    const ch = supabase
+      .channel('rt:dashboard')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'appointments', filter: `business_id=eq.${biz}` },
-        (payload: any) => {
-          setRows((prev) => {
-            const next = [...prev];
-            const row = (payload.new || payload.old) as Row;
+        { event: '*', schema: 'public', table: 'appointments' },
+        (payload) => {
+          setRows((cur) => {
+            const next = [...cur];
+            const row = (payload.new ?? payload.old) as Row;
             const idx = next.findIndex((r) => r.id === row.id);
-
-            if (payload.eventType === 'INSERT') {
-              if (idx === -1) next.push(row);
-              else next[idx] = row;
-            } else if (payload.eventType === 'UPDATE') {
-              if (idx !== -1) next[idx] = row;
-              else next.push(row);
-            } else if (payload.eventType === 'DELETE') {
-              if (idx !== -1) next.splice(idx, 1);
+            if (payload.eventType === 'DELETE') {
+              if (idx >= 0) next.splice(idx, 1);
+            } else if (idx >= 0) {
+              next[idx] = row;
+            } else {
+              next.unshift(row);
             }
-            next.sort((a, b) => new Date(a.start_ts).getTime() - new Date(b.start_ts).getTime());
             return next;
           });
         }
@@ -126,192 +102,202 @@ function Inner() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      canceled = true;
+      supabase.removeChannel(ch);
     };
-  }, [supabase, biz]);
+  }, [supabase]);
 
   // KPIs
-  const now = Date.now();
-  const upcoming = rows.filter(r => new Date(r.start_ts).getTime() >= now && r.status !== 'Cancelled').length;
-  const booked30 = rows.filter(r => r.status === 'Booked' || r.status === 'Rescheduled').length;
-  const revenue30 = rows
-    .filter(r => r.status !== 'Cancelled')
-    .reduce((sum, r) => sum + (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0), 0);
+  const now = new Date();
+  const upcoming = rows.filter(
+    (r) => new Date(r.start_ts) > now && r.status !== 'Cancelled'
+  ).length;
 
-  // Chart #1: bookings per day (last 30d)
+  const booked30 = rows.filter((r) => {
+    const dt = new Date(r.start_ts);
+    const from = new Date();
+    from.setDate(from.getDate() - 30);
+    return r.status !== 'Cancelled' && dt >= from && dt <= now;
+  }).length;
+
+  const revenue30 = rows
+    .filter((r) => {
+      const dt = new Date(r.start_ts);
+      const from = new Date();
+      from.setDate(from.getDate() - 30);
+      return r.status !== 'Cancelled' && dt >= from && dt <= now;
+    })
+    .reduce((sum, r) => sum + priceFor(r.normalized_service, toNumber(r.price_usd)), 0);
+
+  // Chart #1: bookings / day for last 30 days
   const byDay = (() => {
     const map = new Map<string, number>();
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 864e5);
+    const from = new Date();
+    from.setDate(from.getDate() - 29); // include today (30 points total)
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(from);
+      d.setDate(from.getDate() + i);
       const key = d.toISOString().slice(0, 10);
       map.set(key, 0);
     }
-    rows.forEach(r => {
-      const key = new Date(r.start_ts).toISOString().slice(0, 10);
+    rows.forEach((r) => {
+      const d = new Date(r.start_ts);
+      const key = d.toISOString().slice(0, 10);
       if (map.has(key) && r.status !== 'Cancelled') {
-        map.set(key, (map.get(key) || 0) + 1);
+        map.set(key, (map.get(key) ?? 0) + 1);
       }
     });
-    return Array.from(map.entries()).map(([key, cnt]) => ({
-      day: new Date(key).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' }),
-      bookings: cnt,
-    }));
+    return Array.from(map.entries()).map(([date, count]) => ({ date, count }));
   })();
+  const maxBookings = Math.max(1, ...byDay.map((d) => d.count));
 
-  // Chart #2: revenue by service (last 30d)
-  const serviceRevenue = (() => {
-    const svc = new Map<string, number>();
-    rows.forEach(r => {
-      if (r.status === 'Cancelled') return;
-      const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0);
-      const key = r.normalized_service || 'Other';
-      svc.set(key, (svc.get(key) || 0) + price);
+  // Chart #2: revenue by service (30d)
+  const byService = (() => {
+    const from = new Date();
+    from.setDate(from.getDate() - 30);
+    const m = new Map<string, number>();
+    rows.forEach((r) => {
+      const dt = new Date(r.start_ts);
+      if (r.status === 'Cancelled' || dt < from) return;
+      const label = serviceLabelFor(r.normalized_service, r.service_raw);
+      const n = priceFor(r.normalized_service, toNumber(r.price_usd));
+      m.set(label, (m.get(label) ?? 0) + n);
     });
-    return Array.from(svc.entries()).map(([service, revenue]) => ({ service, revenue }));
+    return Array.from(m.entries())
+      .map(([label, revenue]) => ({ label, revenue }))
+      .sort((a, b) => b.revenue - a.revenue);
   })();
+  const maxRevenue = Math.max(1, ...byService.map((s) => s.revenue));
 
-  // Recent blocks
-  const recent = [...rows].sort(
-    (a, b) => new Date(b.start_ts).getTime() - new Date(a.start_ts).getTime()
-  ).slice(0, 6);
-
-  const recentChanges = [...rows]
-    .sort((a, b) =>
-      new Date(b.updated_at || b.created_at || b.start_ts).getTime()
-      - new Date(a.updated_at || a.created_at || a.start_ts).getTime()
-    )
-    .slice(0, 10);
+  const recent = rows.slice(0, 8);
 
   return (
-    <div className="p-6 space-y-5">
-      {/* KPIs */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
-          <div className="text-[#9aa2ad] text-sm">Upcoming</div>
-          <div className="text-[#dcdfe6] text-3xl mt-2">{upcoming}</div>
+    <div className="p-6 space-y-6">
+      {/* KPI cards */}
+      <div className="grid sm:grid-cols-3 gap-4">
+        <div className="rounded-2xl border border-[#22262e] bg-[#0f1115] p-4 shadow-lg">
+          <div className="text-sm text-[#9aa2ad]">Upcoming</div>
+          <div className="text-3xl text-[#dcdfe6] font-semibold mt-1">{upcoming}</div>
         </div>
-        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
-          <div className="text-[#9aa2ad] text-sm">Booked (30d)</div>
-          <div className="text-[#dcdfe6] text-3xl mt-2">{booked30}</div>
+        <div className="rounded-2xl border border-[#22262e] bg-[#0f1115] p-4 shadow-lg">
+          <div className="text-sm text-[#9aa2ad]">Booked (30d)</div>
+          <div className="text-3xl text-[#dcdfe6] font-semibold mt-1">{booked30}</div>
         </div>
-        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
-          <div className="text-[#9aa2ad] text-sm">Revenue (30d)</div>
-          <div className="text-[#dcdfe6] text-3xl mt-2">{fmtUSD(revenue30)}</div>
+        <div className="rounded-2xl border border-[#22262e] bg-[#0f1115] p-4 shadow-lg">
+          <div className="text-sm text-[#9aa2ad]">Revenue (30d)</div>
+          <div className="text-3xl text-[#dcdfe6] font-semibold mt-1">{fmtUSD(revenue30)}</div>
         </div>
       </div>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
-          <div className="text-[#dcdfe6] mb-3">Bookings (last 30 days)</div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={byDay} margin={{ left: 8, right: 8 }}>
-                <CartesianGrid stroke="#22262e" strokeDasharray="3 3" />
-                <XAxis dataKey="day" tick={{ fill: '#9aa2ad', fontSize: 12 }} />
-                <YAxis allowDecimals={false} tick={{ fill: '#9aa2ad', fontSize: 12 }} />
-                <Tooltip contentStyle={{ background: '#0f1115', border: '1px solid #22262e', color: '#dcdfe6' }} />
-                <Area type="monotone" dataKey="bookings" fill="#3b82f6" stroke="#3b82f6" />
-              </AreaChart>
-            </ResponsiveContainer>
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* Bookings per day */}
+        <div className="rounded-2xl border border-[#22262e] bg-[#0f1115] p-4 shadow-lg">
+          <div className="text-[#dcdfe6] font-medium mb-3">Bookings per day (last 30 days)</div>
+          <div className="h-32 flex items-end gap-[6px]">
+            {byDay.map((d) => {
+              const h = (d.count / maxBookings) * 100;
+              return (
+                <div key={d.date} className="flex-1 flex flex-col items-center">
+                  <div
+                    className="w-full rounded-t bg-[#3b82f6]"
+                    style={{ height: `${Math.max(6, h)}%` }}
+                    title={`${d.date}: ${d.count}`}
+                  />
+                </div>
+              );
+            })}
           </div>
+          <div className="mt-2 text-xs text-[#9aa2ad]">Counts exclude cancelled.</div>
         </div>
 
-        <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
-          <div className="text-[#dcdfe6] mb-3">Revenue by service (30d)</div>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={serviceRevenue} margin={{ left: 8, right: 8 }}>
-                <CartesianGrid stroke="#22262e" strokeDasharray="3 3" />
-                <XAxis dataKey="service" tick={{ fill: '#9aa2ad', fontSize: 12 }} />
-                <YAxis tickFormatter={(v)=>fmtUSD(v)} tick={{ fill: '#9aa2ad', fontSize: 12 }} />
-                <Tooltip
-                  formatter={(v: number) => fmtUSD(v)}
-                  contentStyle={{ background: '#0f1115', border: '1px solid #22262e', color: '#dcdfe6' }}
-                />
-                <Bar dataKey="revenue" fill="#3b82f6" />
-              </BarChart>
-            </ResponsiveContainer>
+        {/* Revenue by service */}
+        <div className="rounded-2xl border border-[#22262e] bg-[#0f1115] p-4 shadow-lg">
+          <div className="text-[#dcdfe6] font-medium mb-3">Revenue by service (30 days)</div>
+          <div className="space-y-2">
+            {byService.length === 0 ? (
+              <div className="text-[#9aa2ad] text-sm">No revenue in the last 30 days.</div>
+            ) : (
+              byService.map((s) => {
+                const w = (s.revenue / maxRevenue) * 100;
+                return (
+                  <div key={s.label}>
+                    <div className="flex justify-between text-xs text-[#9aa2ad] mb-1">
+                      <span className="truncate pr-2">{s.label}</span>
+                      <span>{fmtUSD(s.revenue)}</span>
+                    </div>
+                    <div className="h-2 rounded bg-[#14161b] overflow-hidden">
+                      <div className="h-full bg-[#3b82f6]" style={{ width: `${w}%` }} />
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
       </div>
 
-      {/* Recent Changes */}
-      <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
-        <div className="text-[#dcdfe6] mb-3">Recent Changes</div>
-        {recentChanges.length === 0 ? (
-          <div className="text-[#9aa2ad] text-sm">No recent changes.</div>
-        ) : (
-          <ul className="space-y-2">
-            {recentChanges.map((r) => (
-              <li key={r.id} className="text-sm text-[#dcdfe6] flex items-center">
-                <StatusBadge status={r.status as ApptStatus} />
-                <span className="ml-3">{r.caller_name || 'Unknown'}</span>
-                <span className="ml-2 text-[#9aa2ad]">· {r.normalized_service || r.service_raw || '-'}</span>
-                <When ts={r.updated_at || r.created_at} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {/* Recent Appointments */}
-      <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5">
-        <div className="text-[#dcdfe6] mb-3">Recent Appointments</div>
-        <div className="rounded-2xl overflow-hidden border border-[#22262e]">
-          <table className="w-full text-sm">
-            <thead className="text-[#9aa2ad] bg-[#0f1115]">
+      {/* Recent appointments */}
+      <div className="rounded-2xl border border-[#22262e] bg-[#0f1115] shadow-lg overflow-hidden">
+        <div className="p-4 text-[#dcdfe6] font-medium">Recent Appointments</div>
+        <table className="w-full text-sm">
+          <thead className="bg-[#0a0a0b] text-[#9aa2ad]">
+            <tr>
+              <th className="text-left px-4 py-3">Date</th>
+              <th className="text-left px-4 py-3">Time</th>
+              <th className="text-left px-4 py-3">Service</th>
+              <th className="text-left px-4 py-3">Name</th>
+              <th className="text-left px-4 py-3">Phone</th>
+              <th className="text-left px-4 py-3">Source</th>
+              <th className="text-left px-4 py-3">Status</th>
+              <th className="text-right px-4 py-3">Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
               <tr>
-                <th className="text-left px-4 py-3">Date</th>
-                <th className="text-left px-4 py-3">Time</th>
-                <th className="text-left px-4 py-3">Service</th>
-                <th className="text-left px-4 py-3">Name</th>
-                <th className="text-left px-4 py-3">Phone</th>
-                <th className="text-left px-4 py-3">Source</th>
-                <th className="text-left px-4 py-3">Status</th>
-                <th className="text-right px-4 py-3">Price</th>
+                <td className="px-4 py-6 text-[#9aa2ad]" colSpan={8}>
+                  Loading…
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">Loading…</td></tr>
-              ) : recent.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">No recent appointments</td></tr>
-              ) : (
-                recent.map((r) => {
-                  const price = (priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0);
-                  return (
-                    <tr key={r.id} className="border-t border-[#22262e]">
-                      <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
-                      <td className="px-4 py-3 text-[#dcdfe6]">
-                        {fmtTime(r.start_ts)}
-                        <When ts={r.updated_at} />
-                      </td>
-                      <td className="px-4 py-3 text-[#dcdfe6]">{r.normalized_service || r.service_raw || '-'}</td>
-                      <td className="px-4 py-3 text-[#dcdfe6]">{r.caller_name || '-'}</td>
-                      <td className="px-4 py-3 text-[#dcdfe6]">{r.caller_phone_e164 || '-'}</td>
-                      <td className="px-4 py-3 text-[#dcdfe6]">{r.source || 'Retell'}</td>
-                      <td className="px-4 py-3"><StatusBadge status={r.status as ApptStatus} /></td>
-                      <td className="px-4 py-3 text-right text-[#dcdfe6]">{fmtUSD(price)}</td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="text-xs text-[#9aa2ad] mt-2">
-          Rescheduled show in <span className="text-[#f5c451]">gold</span>, cancelled rows are dimmed on the Appointments page.
-        </div>
+            ) : recent.length === 0 ? (
+              <tr>
+                <td className="px-4 py-6 text-[#9aa2ad]" colSpan={8}>
+                  No appointments yet.
+                </td>
+              </tr>
+            ) : (
+              recent.map((r) => {
+                const price = priceFor(r.normalized_service, toNumber(r.price_usd));
+                const label = serviceLabelFor(r.normalized_service, r.service_raw);
+                const statusClasses =
+                  r.status === 'Cancelled'
+                    ? 'bg-red-500/15 text-red-300 border border-red-500/30'
+                    : r.status === 'Rescheduled'
+                    ? 'bg-yellow-500/15 text-yellow-300 border border-yellow-500/30'
+                    : r.status === 'Inquiry'
+                    ? 'bg-slate-500/15 text-slate-300 border border-slate-500/30'
+                    : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30';
+
+                return (
+                  <tr key={r.id} className="border-t border-[#22262e]">
+                    <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{fmtTime(r.start_ts)}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{label}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{r.caller_name ?? '—'}</td>
+                    <td className="px-4 py-3 text-[#dcdfe6]">{prettyPhone(r.caller_phone_e164)}</td>
+                    <td className="px-4 py-3 text-[#9aa2ad]">{r.source ?? '—'}</td>
+                    <td className="px-4 py-3">
+                      <span className={`text-xs px-2 py-1 rounded-xl ${statusClasses}`}>{r.status}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-[#dcdfe6]">{fmtUSD(price)}</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
-  );
-}
-
-export default function Page() {
-  return (
-    <Suspense fallback={<div className="p-6 text-[#9aa2ad]">Loading…</div>}>
-      <Inner />
-    </Suspense>
   );
 }
