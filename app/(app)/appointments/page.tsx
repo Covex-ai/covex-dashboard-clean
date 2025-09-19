@@ -17,10 +17,10 @@ type Row = {
   caller_phone_e164: string | null;
   service_raw: string | null;
   normalized_service: 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60' | null;
-  start_ts: string;   // timestamptz (ISO)
+  start_ts: string;
   end_ts: string | null;
-  price_usd: string | number | null; // Supabase numeric comes back as string
-  updated_at?: string | null; // optional audit column
+  price_usd: string | number | null; // numeric -> string from Supabase
+  updated_at?: string | null;
 };
 
 function fmtDate(iso: string) {
@@ -43,7 +43,6 @@ function prettyPhone(p?: string | null) {
     return p;
   }
 }
-// <<< NEW: safe numeric coercion for Supabase numeric -> JS number
 function toNumber(v: number | string | null | undefined): number | null {
   if (v === null || v === undefined) return null;
   const n = typeof v === 'number' ? v : parseFloat(v);
@@ -60,16 +59,15 @@ function Inner() {
   const [range, setRange] = useState<'7' | '30' | '90' | 'Future'>('30');
   const [showCancelled, setShowCancelled] = useState(false);
 
-  // Resolve business id
   const [biz, setBiz] = useState<string | null>(null);
 
+  // Resolve business id
   useEffect(() => {
     const bizParam = params.get('biz');
     if (bizParam) {
       setBiz(bizParam);
       return;
     }
-
     (async () => {
       const { data: u } = await supabase.auth.getUser();
       const uid = u.user?.id;
@@ -86,6 +84,7 @@ function Inner() {
     })();
   }, [params, supabase]);
 
+  // Initial fetch (and on range/biz change)
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -114,6 +113,44 @@ function Inner() {
     })();
   }, [supabase, biz, range]);
 
+  // Realtime subscription (INSERT/UPDATE/DELETE) scoped to business_id
+  useEffect(() => {
+    if (!biz) return; // if you run demo-without-auth, you can remove this guard
+
+    const channel = supabase
+      .channel(`appointments-${biz}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'appointments', filter: `business_id=eq.${biz}` },
+        (payload: any) => {
+          setRows((prev) => {
+            const next = [...prev];
+            const row = (payload.new || payload.old) as Row;
+
+            const idx = next.findIndex((r) => r.id === row.id);
+            if (payload.eventType === 'INSERT') {
+              if (idx === -1) next.push(row);
+              else next[idx] = row; // either way, reflect latest
+            } else if (payload.eventType === 'UPDATE') {
+              if (idx !== -1) next[idx] = row;
+              else next.push(row); // handle out-of-range initial fetch windows
+            } else if (payload.eventType === 'DELETE') {
+              if (idx !== -1) next.splice(idx, 1);
+            }
+            // keep table order ascending by start time
+            next.sort((a, b) => new Date(a.start_ts).getTime() - new Date(b.start_ts).getTime());
+            return next;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, biz]);
+
+  // Client-side filters
   const visible = rows
     .filter((r) => (showCancelled ? true : r.status !== 'Cancelled'))
     .filter((r) => {
@@ -178,7 +215,7 @@ function Inner() {
               <tr><td colSpan={8} className="px-4 py-8 text-center text-[#9aa2ad]">No appointments</td></tr>
             ) : (
               visible.map((r) => {
-                const price = priceFor(r.normalized_service, toNumber(r.price_usd)); // <<< FIX
+                const price = priceFor(r.normalized_service, toNumber(r.price_usd)) ?? 0;
                 return (
                   <tr key={r.id} className={`border-t border-[#22262e] ${r.status === 'Cancelled' ? 'opacity-60' : ''}`}>
                     <td className="px-4 py-3 text-[#dcdfe6]">{fmtDate(r.start_ts)}</td>
