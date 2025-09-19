@@ -28,20 +28,23 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
       <div className="w-full max-w-md bg-cx-surface border border-cx-border rounded-2xl p-6">
-        {/* Logo */}
-        <div className="flex justify-center mb-5">
+        {/* Bigger logo */}
+        <div className="flex justify-center mb-6">
           {logoOk ? (
             <Image
               src={LOGO_SRC}
               alt="COVEX"
-              width={240}
-              height={48}
-              className="opacity-90 h-10 w-auto"
+              width={560}
+              height={140}
+              className="opacity-95 h-14 w-auto" // 56px tall
               priority
+              draggable={false}
               onError={() => setLogoOk(false)}
             />
           ) : (
-            <span className="font-semibold tracking-[0.2em] text-white">COVEX</span>
+            <span className="text-2xl font-semibold tracking-[0.35em] text-white">
+              COVEX
+            </span>
           )}
         </div>
 
