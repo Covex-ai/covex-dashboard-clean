@@ -1,85 +1,68 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useState } from 'react';
-import { createBrowserClient } from '@/lib/supabaseBrowser';
+import { useEffect, useMemo, useState } from "react";
+import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 export default function SettingsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [businessId, setBusinessId] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [businessUUID, setBusinessUUID] = useState<string>("-");
+  const [email, setEmail] = useState<string>("-");
+  const [auth, setAuth] = useState<string>("Checking...");
 
   useEffect(() => {
     (async () => {
-      setLoading(true);
-      setMsg(null);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const user = sessionData.session?.user ?? null;
+      setAuth(user ? "Authenticated" : "Not signed in");
+      setEmail(user?.email ?? "-");
 
-      const { data: u } = await supabase.auth.getUser();
-      const uid = u.user?.id;
-      if (!uid) {
-        setMsg('You are not signed in (mock login is OK).');
-        setLoading(false);
-        return;
+      if (user) {
+        const { data } = await supabase.from("profiles").select("business_uuid").eq("id", user.id).maybeSingle();
+        if (data?.business_uuid) setBusinessUUID(data.business_uuid);
       }
-
-      const { data } = await supabase
-        .from('profiles')
-        .select('business_id')
-        .eq('id', uid)
-        .maybeSingle();
-
-      if (data?.business_id) setBusinessId(data.business_id as string);
-      setLoading(false);
     })();
-  }, [supabase]);
+  }, []);
 
-  async function save() {
-    setSaving(true);
-    setMsg(null);
-
-    const { data: u } = await supabase.auth.getUser();
-    const uid = u.user?.id;
-    if (!uid) {
-      setMsg('No auth user (mock login). Use the Settings field but it will not persist.');
-      setSaving(false);
-      return;
-    }
-
-    const { error } = await supabase
-      .from('profiles')
-      .upsert({ id: uid, business_id: businessId });
-
-    setMsg(error ? error.message : 'Saved.');
-    setSaving(false);
+  async function insertTestAppointment() {
+    const now = new Date();
+    const in30 = new Date(now.getTime() + 30 * 60 * 1000);
+    const { data, error } = await supabase.from("appointments").insert({
+      business_uuid: businessUUID,
+      start_ts: now.toISOString(),
+      end_ts: in30.toISOString(),
+      name: "Realtime Test",
+      phone: "+10000000000",
+      status: "Booked",
+      service_raw: "Standard adjustment",
+      price_usd: 85
+    }).select().single();
+    alert(error ? `Insert failed: ${error.message}` : `Inserted id ${data?.id}`);
   }
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="text-[#dcdfe6] text-xl">Settings</div>
-
-      <div className="rounded-2xl bg-[#0f1115] border border-[#22262e] p-5 space-y-3 max-w-xl">
-        <label className="block text-sm text-[#9aa2ad]">Business UUID</label>
-        <input
-          className="w-full bg-[#0a0a0b] border border-[#22262e] rounded-xl px-3 py-2 text-[#dcdfe6] placeholder-[#9aa2ad]"
-          placeholder="e.g. 123e4567-e89b-12d3-a456-426614174000"
-          value={businessId}
-          onChange={(e) => setBusinessId(e.target.value)}
-          disabled={loading || saving}
-        />
-
+    <div className="space-y-6">
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+        <h3 className="font-semibold mb-2">Account</h3>
+        <div className="text-sm text-cx-muted">Auth status</div>
+        <div className="mb-4">{auth}</div>
+        <div className="text-sm text-cx-muted">Email</div>
+        <div className="mb-4">{email}</div>
+        <div className="text-sm text-cx-muted">Business UUID</div>
+        <div className="mb-2">{businessUUID}</div>
         <button
-          onClick={save}
-          disabled={saving}
-          className="bg-[#3b82f6] hover:opacity-90 text-white rounded-xl px-4 py-2"
+          onClick={insertTestAppointment}
+          className="btn-pill btn-pill--active mt-2"
         >
-          {saving ? 'Saving…' : 'Save'}
+          Insert test appointment (verify Realtime)
         </button>
+      </div>
 
-        {msg && <div className="text-sm text-[#9aa2ad]">{msg}</div>}
-        <div className="text-xs text-[#9aa2ad]">
-          RLS scopes reads/writes to this business for your user.
-        </div>
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+        <h3 className="font-semibold mb-2">Theme</h3>
+        <p className="text-cx-muted text-sm">
+          This dashboard enforces a pure black background (#000000) and white UI tokens.
+          Avoid custom colors; use provided CSS variables/classes.
+        </p>
       </div>
     </div>
   );
