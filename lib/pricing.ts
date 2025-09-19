@@ -1,20 +1,54 @@
-export type NormalizedService = 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60';
+// lib/pricing.ts
+export type NormalizedService = 'ACUTE_30' | 'STANDARD_45' | 'NEWPATIENT_60' | null;
 
-export const SERVICE_PRICE_USD: Record<NormalizedService, number> = {
-  ACUTE_30: 80,          // <- set your real prices here
-  STANDARD_45: 120,
-  NEWPATIENT_60: 180,
+/** Default prices you can tweak */
+const PRICE_TABLE: Record<Exclude<NormalizedService, null>, number> = {
+  ACUTE_30: 0,        // set your real price
+  STANDARD_45: 0,     // set your real price
+  NEWPATIENT_60: 0,   // set your real price
 };
 
-/** If `price_usd` is in the DB use it; otherwise fall back to the map above. */
-export function priceFor(
-  normalized: string | null | undefined,
-  explicit?: number | null
-): number | null {
-  if (typeof explicit === 'number') return explicit;
-  if (!normalized) return null;
-  return SERVICE_PRICE_USD[normalized as NormalizedService] ?? null;
+/** Professional labels for the dashboard */
+const DISPLAY_NAMES: Record<Exclude<NormalizedService, null>, string> = {
+  ACUTE_30: 'Acute pain / emergency adjustment (30 min)',
+  STANDARD_45: 'Standard adjustment + soft tissue (45 min)',
+  NEWPATIENT_60: 'New patient exam + X-rays + adjustment (60 min)',
+};
+
+/** Format USD */
+export function fmtUSD(value: number | null | undefined) {
+  const n = typeof value === 'number' ? value : 0;
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
 }
 
-export const fmtUSD = (n?: number | null) =>
-  n == null ? '-' : n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+/** Coerce potential text/nullable numeric fields into a number (or 0) */
+export function toNumber(n: string | number | null | undefined): number {
+  if (typeof n === 'number') return n;
+  if (typeof n === 'string') {
+    const p = parseFloat(n);
+    return Number.isFinite(p) ? p : 0;
+  }
+  return 0;
+}
+
+/**
+ * Return a price for a service. If the row carries price_usd, prefer it.
+ * Fallback to our default table (so UI stays consistent even if null).
+ */
+export function priceFor(normalized: NormalizedService, priceFromRow?: string | number | null): number {
+  const explicit = toNumber(priceFromRow);
+  if (explicit > 0) return explicit;
+
+  if (!normalized) return 0;
+  return PRICE_TABLE[normalized] ?? 0;
+}
+
+/**
+ * Friendly label for the UI:
+ *  - use normalized mapping when present
+ *  - otherwise fall back to service_raw
+ */
+export function serviceLabelFor(normalized: NormalizedService, serviceRaw?: string | null): string {
+  if (normalized && DISPLAY_NAMES[normalized]) return DISPLAY_NAMES[normalized];
+  return serviceRaw ?? '—';
+}
