@@ -1,25 +1,27 @@
 "use client";
 
-type Props = {
-  value: number;                // 7 | 30 | 90
-  onChange: (days: number) => void;
-  compact?: boolean;
-  ariaLabel?: string;
-};
+type Range = "7d" | "30d" | "90d";
 
-export default function RangePills({ value, onChange, compact, ariaLabel }: Props) {
-  const items = [7, 30, 90];
+export default function RangePills({
+  value,
+  onChange,
+  className = "",
+}: {
+  value: Range;
+  onChange: (v: Range) => void;
+  className?: string;
+}) {
+  const opts: Range[] = ["7d", "30d", "90d"];
   return (
-    <div className="c-pills" aria-label={ariaLabel ?? "Range selector"}>
-      {items.map((d) => (
+    <div className={`flex gap-2 ${className}`}>
+      {opts.map((opt) => (
         <button
-          key={d}
+          key={opt}
           type="button"
-          className="c-pill"
-            data-active={value === d}
-          onClick={() => onChange(d)}
+          onClick={() => onChange(opt)}
+          className={`btn-pill ${opt === value ? "btn-pill--active" : ""}`}
         >
-          {d}d
+          {opt}
         </button>
       ))}
     </div>
