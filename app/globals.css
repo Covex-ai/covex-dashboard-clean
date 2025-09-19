@@ -2,115 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== Brand theme (matches covex.ai landing) ===== */
+/* ---- Covex Dark Theme (no blue, premium black/white) ---- */
 :root {
-  --cx-bg: #0b0c0f;            /* page background (pure dark) */
-  --cx-surface: #12141a;       /* cards / panels */
-  --cx-border: #1f232b;        /* subtle borders */
-  --cx-text: #f2f5f9;          /* primary text */
-  --cx-muted: #a7b0bf;         /* secondary text */
-  --cx-accent: #2ad1ff;        /* cyan accent (dots/line) */
-  --cx-accent-soft: rgba(42, 209, 255, 0.15);
-  --cx-success: #14c184;       /* “Booked” pill etc. */
-  --cx-warning: #efb417;
-  --cx-danger: #ef4444;
+  --cx-bg: #0b0b0b;          /* page background (pure dark) */
+  --cx-surface: #121212;     /* cards / panels */
+  --cx-border: #232323;      /* subtle borders */
+  --cx-text: #f3f4f6;        /* primary text */
+  --cx-muted: #a3a3a3;       /* muted text */
+  --cx-accent: #ffffff;      /* highlight, accents (white, not blue) */
+
+  /* charts */
+  --cx-grid: #222;           /* chart grid */
+  --cx-line: #e5e7eb;        /* line stroke */
+  --cx-dot: #ffffff;         /* dot color */
+  --cx-bar: #f2f2f2;         /* bar fill */
+  --cx-tooltip-bg: #0f0f10;  /* tooltip background */
+  --cx-tooltip-border: #2a2a2a;
 }
 
-/* Global canvas */
+/* Tailwind shorthands */
 html, body {
-  background: var(--cx-bg);
+  @apply bg-[color:var(--cx-bg)] text-[color:var(--cx-text)] antialiased;
+}
+
+/* Surface cards */
+.c-card {
+  background: var(--cx-surface);
+  border: 1px solid var(--cx-border);
+  border-radius: 14px;
+}
+
+/* Stat value */
+.c-stat {
+  @apply text-3xl font-semibold;
+}
+
+/* Section titles */
+.c-title {
+  @apply text-sm font-medium text-[color:var(--cx-muted)];
+}
+
+/* Range pills (7d / 30d / 90d) */
+.c-pills {
+  @apply inline-flex items-center gap-2 rounded-xl p-1 border;
+  border-color: var(--cx-border);
+  background: color-mix(in oklab, var(--cx-surface) 96%, black 4%);
+}
+.c-pill {
+  @apply text-xs font-medium px-3 py-1 rounded-lg transition;
+  color: var(--cx-muted);
+}
+.c-pill[data-active="true"] {
   color: var(--cx-text);
+  background: #171717;
 }
 
-/* Tailwind helpers */
-@layer utilities {
-  .bg-cx-bg { background-color: var(--cx-bg); }
-  .bg-cx-surface { background-color: var(--cx-surface); }
-  .border-cx-border { border-color: var(--cx-border); }
-  .text-cx-text { color: var(--cx-text); }
-  .text-cx-muted { color: var(--cx-muted); }
-  .accent { color: var(--cx-accent); }
-  .shadow-cx {
-    /* very soft elevated card look */
-    box-shadow: 0 0 0 1px var(--cx-border), 0 8px 24px rgba(0,0,0,.35);
-  }
-}
-
-/* Card styling */
-.card {
-  @apply bg-cx-surface border border-cx-border rounded-2xl shadow-cx;
-}
-
-/* Small stat tiles */
-.stat {
-  @apply card p-5 flex flex-col gap-2;
-}
-.stat-title {
-  @apply text-sm text-cx-muted;
-}
-.stat-value {
-  @apply text-2xl font-semibold;
-}
-
-/* Recharts theming */
+/* Recharts – dark mode look (no cyan) */
 .recharts-cartesian-grid line {
-  stroke: #232833;
+  stroke: var(--cx-grid);
 }
-.recharts-xAxis .recharts-cartesian-axis-tick text,
-.recharts-yAxis .recharts-cartesian-axis-tick text {
-  fill: var(--cx-muted);
-}
-.recharts-layer.recharts-line-dots circle {
-  stroke: var(--cx-accent);
-  fill: #0b0c0f; /* on-brand black fill, cyan ring */
-  stroke-width: 2;
-}
-.recharts-default-tooltip {
-  background: var(--cx-surface) !important;
-  border: 1px solid var(--cx-border) !important;
-  color: var(--cx-text) !important;
-  border-radius: 12px !important;
-}
-
-/* Segmented control (range switch) */
-.segmented {
-  @apply inline-flex items-center p-1 rounded-xl border border-cx-border bg-cx-surface shadow-cx;
-}
-.segmented button {
-  @apply px-3 py-1.5 text-sm rounded-lg transition-colors text-cx-muted;
-}
-.segmented button[aria-pressed="true"] {
-  @apply bg-cx-bg text-cx-text;
-  box-shadow: inset 0 0 0 1px var(--cx-border);
-}
-
-/* Table look */
-.table {
-  @apply w-full text-sm;
-}
-.table th {
-  @apply text-left font-medium text-cx-muted px-4 py-3;
-}
-.table td {
-  @apply px-4 py-3 border-t border-cx-border;
-}
-
-/* Status pills */
-.pill {
-  @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium;
-}
-.pill--ok { background: rgba(20,193,132,.15); color: #16e3a0; border: 1px solid rgba(20,193,132,.25); }
-.pill--warn { background: rgba(239,180,23,.12); color: #ffd66e; border: 1px solid rgba(239,180,23,.25); }
-.pill--bad { background: rgba(239,68,68,.12); color: #ff8f8f; border: 1px solid rgba(239,68,68,.25); }
-
-/* Brand header wordmark area (sidebar) */
-.brand-wordmark {
-  letter-spacing: .24em;
-  font-weight: 700;
-}
-
-/* Dropdown fix (only for the tiny native selects we still use) */
-select, option {
-  background-color: var(--cx-surface);
+.recharts-tooltip-wrapper .c-tip {
+  background: var(--cx-tooltip-bg);
+  border: 1px solid var(--cx-tooltip-border);
   color: var(--cx-text);
+  padding: 8px 10px;
+  border-radius: 10px;
+  box-shadow: 0 10px 20px rgba(0,0,0,.35);
+}
+
+/* Tables */
+.c-table th {
+  @apply text-left text-sm font-medium;
+  color: var(--cx-muted);
+}
+.c-table td {
+  @apply text-sm;
+  color: var(--cx-text);
+}
+
+/* Sidebar */
+.c-sidebar {
+  background: linear-gradient(180deg, #0b0b0b 0%, #0d0d0d 100%);
+  border-right: 1px solid var(--cx-border);
+}
+.c-brand {
+  @apply flex items-center gap-3 h-16 px-5 border-b;
+  border-color: var(--cx-border);
 }
