@@ -29,20 +29,23 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Header stays h-16; just render a taller logo inside */}
+      {/* Header stays 64px tall; logo grows inside without changing layout */}
       <div className="h-16 px-5 flex items-center gap-3 border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
             alt="COVEX"
-            width={240}
-            height={48}
-            className="opacity-90 h-9 w-auto" // ↑ bigger logo (36px tall) without changing header height
+            width={480}
+            height={120}
+            className="opacity-95 h-12 w-auto" // 48px tall logo
             priority
+            draggable={false}
             onError={() => setLogoOk(false)}
           />
         ) : (
-          <span className="font-semibold tracking-[0.2em] text-white">COVEX</span>
+          <span className="text-2xl font-semibold tracking-[0.35em] text-white">
+            COVEX
+          </span>
         )}
       </div>
 
