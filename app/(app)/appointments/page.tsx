@@ -18,11 +18,15 @@ type View = "Today" | "Future" | "All";
 
 type ApptRow = {
   id: number;
-  start_ts: string;
-  end_ts: string | null;
+  start_ts: string | null;          // ISO (may be null in some rows)
+  end_ts: string | null;            // ISO
+  created_at?: string | null;       // optional fallback for timing
+  // DB sometimes stores these as caller_* instead of name/phone
   name: string | null;
   phone: string | null;
-  status: string | null; // raw; we normalize below
+  caller_name?: string | null;
+  caller_phone_e164?: string | null;
+  status: string | null;            // raw; we normalize
   service_raw: string | null;
   normalized_service: NormalizedService | null;
   price_usd: number | string | null;
@@ -38,13 +42,21 @@ function normalizeStatus(s: string | null | undefined): Status | null {
   return null;
 }
 
+// pick best timestamp we have for comparisons
+function getWhen(row: ApptRow): Date | null {
+  const a = row.start_ts ? new Date(row.start_ts) : null;
+  const b = row.end_ts ? new Date(row.end_ts) : null;
+  const c = row.created_at ? new Date(row.created_at) : null;
+  return a ?? b ?? c ?? null;
+}
+
 function isCompleted(row: ApptRow): boolean {
-  // Consider as completed if:
-  // 1) status is explicitly "Completed", OR
-  // 2) appointment start time is in the past AND not Cancelled.
   const st = normalizeStatus(row.status);
-  const past = new Date(row.start_ts).getTime() < Date.now();
-  return st === "Completed" || (past && st !== "Cancelled");
+  if (st === "Cancelled") return false;
+  if (st === "Completed") return true;
+  const when = getWhen(row);
+  if (!when) return false;
+  return when.getTime() < Date.now();
 }
 
 function StatusBadge({ value }: { value: Status | null }) {
@@ -79,7 +91,7 @@ function StatusBadge({ value }: { value: Status | null }) {
 
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [view, setView] = useState<View>("Today"); // <- default = Today
+  const [view, setView] = useState<View>("Today"); // default = Today
   const [range, setRange] = useState<Range>("30d");
   const [status, setStatus] = useState<Status>("All");
   const [q, setQ] = useState("");
@@ -99,11 +111,11 @@ export default function AppointmentsPage() {
   }
 
   async function load() {
-    // Always fetch a reasonable window, then filter client-side for view/status/search.
     const baseDays = daysFor(range);
     const from = new Date();
     from.setDate(from.getDate() - baseDays);
 
+    // Fetch a window; we filter client-side for view/status/search
     const { data, error } = await supabase
       .from("appointments")
       .select("*")
@@ -121,15 +133,18 @@ export default function AppointmentsPage() {
 
     if (view === "Today") {
       byView = all.filter((r) => {
-        const t = new Date(r.start_ts).getTime();
+        const when = getWhen(r);
+        if (!when) return false;
+        const t = when.getTime();
         return t >= sToday && t <= eToday;
-      });
+        });
     } else if (view === "Future") {
       byView = all.filter((r) => {
-        const t = new Date(r.start_ts).getTime();
-        return t > eToday;
+        const when = getWhen(r);
+        if (!when) return false;
+        return when.getTime() > eToday;
       });
-    } // "All" just uses the base window
+    }
 
     // 2) Filter by STATUS (robust)
     let byStatus: ApptRow[];
@@ -141,10 +156,12 @@ export default function AppointmentsPage() {
       byStatus = byView.filter((r) => normalizeStatus(r.status) === status);
     }
 
-    // 3) Search filter
+    // 3) Search (now includes caller_* columns)
     const final = q.trim()
       ? byStatus.filter((r) => {
-          const hay = `${r.name ?? ""} ${r.phone ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
+          const name = r.name ?? r.caller_name ?? "";
+          const phone = r.phone ?? r.caller_phone_e164 ?? "";
+          const hay = `${name} ${phone} ${r.service_raw ?? ""}`.toLowerCase();
           return hay.includes(q.toLowerCase());
         })
       : byStatus;
@@ -173,7 +190,7 @@ export default function AppointmentsPage() {
       {/* Controls row */}
       <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
         <div className="flex gap-2">
-          {/* New view tabs */}
+          {/* View tabs */}
           <div className="flex gap-2">
             {(["Today","Future","All"] as View[]).map(v => (
               <button
@@ -187,10 +204,9 @@ export default function AppointmentsPage() {
             ))}
           </div>
 
-          {/* Keep range pills (used when View=All; harmless otherwise) */}
           <RangePills value={range} onChange={setRange} />
 
-          {/* Legible native select: dark control; white popup with black text */}
+          {/* Legible native select */}
           <select
             className="btn-pill bg-white/5 text-white [color-scheme:dark]"
             value={status}
@@ -231,24 +247,25 @@ export default function AppointmentsPage() {
             {rows.map((r) => {
               const ns = r.normalized_service ?? normalizeService(r.service_raw);
               const st = normalizeStatus(r.status);
+              const name = r.name ?? r.caller_name ?? "—";
+              const phone = r.phone ?? r.caller_phone_e164 ?? "—";
+              const when = getWhen(r);
+
               return (
                 <tr key={r.id} className="border-t border-cx-border">
                   <td className="py-2 pr-4">
-                    {new Date(r.start_ts).toLocaleDateString()}
+                    {when ? when.toLocaleDateString() : "—"}
                   </td>
                   <td className="py-2 pr-4">
-                    {new Date(r.start_ts).toLocaleTimeString([], {
-                      hour: "numeric",
-                      minute: "2-digit",
-                    })}
+                    {when
+                      ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                      : "—"}
                   </td>
                   <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
-                  <td className="py-2 pr-4">{r.name ?? "—"}</td>
-                  <td className="py-2 pr-4">{r.phone ?? "—"}</td>
-                  <td className="py-2 pr-4"><StatusBadge value={st} /></td>
-                  <td className="py-2 pr-4">
-                    {fmtUSD(priceFor(ns, toNumber(r.price_usd)))}
-                  </td>
+                  <td className="py-2 pr-4">{name}</td>
+                  <td className="py-2 pr-4">{phone}</td>
+                  <td className="py-2 pr-4"><StatusBadge value={st ?? (isCompleted(r) ? "Completed" : null)} /></td>
+                  <td className="py-2 pr-4">{fmtUSD(priceFor(ns, toNumber(r.price_usd)))}</td>
                 </tr>
               );
             })}
