@@ -1,60 +1,47 @@
-// lib/pricing.ts
+export const SERVICE_LABELS: Record<string, string> = {
+  ACUTE_30: "Acute pain / emergency adjustment",
+  STANDARD: "Standard adjustment + soft tissue (established)",
+  NEW_PT: "New patient exam + X-rays + adjustment",
+};
 
-// You can treat this as the single source of truth for pricing + labels.
-// Edit the map/labels any time without touching pages.
-
-export type NormalizedService = string;
-
-// Default prices used when a row.price_usd is null
 export const SERVICE_PRICE_USD: Record<string, number> = {
   ACUTE_30: 75,
-  STANDARD_30: 60,
-  NEW_PATIENT_60: 120,
-  // add more codes if you introduce them
+  STANDARD: 90,
+  NEW_PT: 120,
 };
 
-// Pretty labels shown in the UI
-const SERVICE_LABELS: Record<string, string> = {
-  ACUTE_30: 'Acute pain / emergency adjustment',
-  STANDARD_30: 'Standard adjustment + soft tissue',
-  NEW_PATIENT_60: 'New patient exam + X-rays + adjustment',
-};
+export function normalizeService(input?: string | null): keyof typeof SERVICE_PRICE_USD | undefined {
+  if (!input) return undefined;
+  const s = input.toLowerCase();
 
-export function serviceLabelFor(
-  normalized: NormalizedService | null | undefined,
-  serviceRaw?: string | null
-): string {
+  if (s.includes("acute")) return "ACUTE_30";
+  if (s.includes("standard")) return "STANDARD";
+  if (s.includes("new patient") || s.includes("x-ray") || s.includes("x-rays")) return "NEW_PT";
+
+  // fallbacks for codes like ACUTE_30, STANDARD, NEW_PT
+  if (s.includes("acute_30")) return "ACUTE_30";
+  if (s.includes("standard")) return "STANDARD";
+  if (s.includes("new_pt")) return "NEW_PT";
+  return undefined;
+}
+
+export function serviceLabelFor(normalized?: string, raw?: string | null) {
   if (normalized && SERVICE_LABELS[normalized]) return SERVICE_LABELS[normalized];
-  if (serviceRaw && serviceRaw.trim()) return tidy(serviceRaw);
-  if (normalized && normalized.trim()) return tidy(normalized);
-  return 'Other';
+  return raw ?? "—";
 }
 
-function tidy(s: string) {
-  return s.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-// Turn DB price into a number (or null)
-export function toNumber(v: string | number | null | undefined): number | null {
-  if (v == null || v === '') return null;
-  const n = typeof v === 'number' ? v : Number(v);
+export function toNumber(x: unknown): number | null {
+  if (x === null || x === undefined) return null;
+  const n = typeof x === "string" ? parseFloat(x) : (x as number);
   return Number.isFinite(n) ? n : null;
 }
 
-// Use explicit price if provided, otherwise default price map, otherwise 0
 export function priceFor(
-  normalized: NormalizedService | null | undefined,
-  explicitPrice: number | null | undefined
+  normalized?: keyof typeof SERVICE_PRICE_USD,
+  override?: number | string | null
 ): number {
-  if (typeof explicitPrice === 'number') return explicitPrice;
-  if (normalized && SERVICE_PRICE_USD[normalized] != null) return SERVICE_PRICE_USD[normalized];
+  const over = toNumber(override);
+  if (over !== null) return over;
+  if (normalized && SERVICE_PRICE_USD[normalized] !== undefined) return SERVICE_PRICE_USD[normalized];
   return 0;
-}
-
-export function fmtUSD(n: number): string {
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(n || 0);
 }
