@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import Logo from "@/components/Logo";
+import Brand from "./Brand";
 
 const links = [
   { href: "/dashboard", label: "Overview" },
@@ -16,9 +16,7 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-surface">
-      <div className="h-16 px-5 flex items-center justify-between border-b border-cx-border">
-        <Logo />
-      </div>
+      <Brand />
 
       <nav className="flex-1 p-3">
         {links.map((l) => {
@@ -27,12 +25,8 @@ export default function Sidebar() {
             <Link
               key={l.href}
               href={l.href}
-              className={[
-                "block px-4 py-2.5 rounded-xl mb-1 font-medium transition",
-                active
-                  ? "bg-cx-bg text-cx-text"
-                  : "text-cx-muted hover:text-cx-text hover:bg-cx-bg/60",
-              ].join(" ")}
+              className={`block px-4 py-2.5 rounded-xl mb-1 font-medium transition
+                ${active ? "bg-cx-bg text-cx-text" : "text-cx-muted hover:text-cx-text hover:bg-cx-bg/60"}`}
             >
               {l.label}
             </Link>
