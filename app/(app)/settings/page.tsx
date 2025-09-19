@@ -35,18 +35,18 @@ export default function SettingsPage() {
       setStatus("Authenticated");
       if (bu) await refreshStats();
     })();
-  }, []);
+  }, [supabase]);
 
   async function refreshStats() {
-    // With RLS, this only works for the current business_uuid in your profile
+    const since = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
     const { data: appts } = await supabase
       .from("appointments")
-      .select("status, price_usd, normalized_service, service_raw")
-      .gte("start_ts", new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString());
+      .select("status, price_usd")
+      .gte("start_ts", since);
 
     const rows = (appts ?? []);
-    let bookings = rows.length;
-    let revenue = rows
+    const bookings = rows.length;
+    const revenue = rows
       .filter((r: any) => r.status !== "Cancelled")
       .reduce((sum: number, r: any) => sum + Number(r.price_usd ?? 0), 0);
 
@@ -97,7 +97,7 @@ export default function SettingsPage() {
         </div>
         <p className="text-xs text-cx-muted mt-2">
           This stores your Business ID in <code className="text-white">profiles.business_uuid</code>.
-          RLS uses it so all pages show **your** tenant’s data.
+          RLS uses it so all pages show your tenant’s data.
         </p>
       </div>
 
