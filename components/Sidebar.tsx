@@ -13,7 +13,6 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-// Put your actual logo file at /public/brand-logo.png (PNG or SVG)
 const LOGO_SRC = "/brand-logo.png";
 
 export default function Sidebar() {
@@ -29,15 +28,16 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Taller header; logo centered and big */}
-      <div className="h-28 px-5 flex items-center justify-center border-b border-cx-border">
+      {/* header 112px * 2.5 = 280px */}
+      <div className="h-[280px] px-5 flex items-center justify-center border-b border-cx-border">
         {logoOk ? (
+          /* logo 96px * 2.5 = 240px */
           <Image
             src={LOGO_SRC}
             alt="COVEX"
             width={2400}
             height={600}
-            className="opacity-95 h-24 w-auto object-contain" /* ~96px tall */
+            className="opacity-95 h-[240px] w-auto object-contain"
             priority
             draggable={false}
             onError={() => setLogoOk(false)}
