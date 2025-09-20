@@ -28,7 +28,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
       <div className="w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl p-8">
-        {/* Big centered logo INSIDE the card */}
+        {/* original h-16/sm:h-20/md:h-24  -> x2.5 => 160/200/240 */}
         <div className="flex justify-center mb-6">
           {logoOk ? (
             <Image
@@ -36,13 +36,13 @@ export default function LoginPage() {
               alt="COVEX"
               width={2000}
               height={500}
-              className="opacity-95 h-16 sm:h-20 md:h-24 w-auto object-contain" /* 64–96px tall */
+              className="opacity-95 h-40 sm:h-[200px] md:h-[240px] w-auto object-contain"
               priority
               draggable={false}
               onError={() => setLogoOk(false)}
             />
           ) : (
-            <span className="text-3xl sm:text-4xl font-semibold tracking-[0.35em] text-white">
+            <span className="text-4xl sm:text-5xl font-semibold tracking-[0.35em] text-white">
               COVEX
             </span>
           )}
