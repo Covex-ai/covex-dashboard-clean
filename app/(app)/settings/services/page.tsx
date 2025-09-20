@@ -44,12 +44,13 @@ export default function ServicesManagerPage() {
       .order("active", { ascending: false })
       .order("sort_order", { ascending: true, nullsFirst: false })
       .order("name", { ascending: true });
+
     setRows((data as Service[]) || []);
   }
 
   useEffect(() => { load(); }, []);
 
-  // realtime refresh
+  // Realtime as a safety net (but UI updates immediately below)
   useEffect(() => {
     const ch = supabase
       .channel("rt-services")
@@ -58,27 +59,67 @@ export default function ServicesManagerPage() {
     return () => { supabase.removeChannel(ch); };
   }, []);
 
+  // --------- Helpers with optimistic UI updates ---------
   async function addService() {
     if (!biz) return;
     if (!newCode.trim() || !newName.trim()) return;
     setBusy(true); setMsg(null);
-    const { error } = await supabase.from("services").insert({
+    const insert = {
       business_id: biz.id,
       code: newCode.trim().toUpperCase().replace(/\s+/g,"_"),
       name: newName.trim(),
       default_price_usd: parseUSD(newPrice),
       active: true,
-    } as any);
+    } as any;
+
+    // optimistic: show it at the top while DB writes
+    const tempId = Date.now() * -1;
+    setRows(prev => [{ ...(insert as Service), id: tempId, sort_order: 0 }, ...prev]);
+
+    const { data, error } = await supabase.from("services").insert(insert).select("*").single();
     setBusy(false);
-    if (error) setMsg(error.message);
-    else { setNewCode(""); setNewName(""); setNewPrice("0"); load(); }
+
+    if (error) {
+      setMsg(error.message);
+      // revert optimistic row
+      setRows(prev => prev.filter(r => r.id !== tempId));
+    } else {
+      // replace temp row with real row
+      setRows(prev => prev.map(r => (r.id === tempId ? (data as Service) : r)));
+      setNewCode(""); setNewName(""); setNewPrice("0");
+    }
   }
 
-  async function save(row: Service, patch: Partial<Service>) {
-    setBusy(true); setMsg(null);
-    const { error } = await supabase.from("services").update(patch).eq("id", row.id);
-    setBusy(false);
-    if (error) setMsg(error.message);
+  async function savePatch(id: number, patch: Partial<Service>) {
+    // optimistic: update local state first
+    setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
+    const { error } = await supabase.from("services").update(patch).eq("id", id);
+    if (error) {
+      setMsg(error.message);
+      // fallback: reload from DB to ensure consistency
+      load();
+    }
+  }
+
+  function toggleActive(row: Service) {
+    savePatch(row.id, { active: !row.active });
+  }
+
+  function updateCode(row: Service, val: string) {
+    const code = val.toUpperCase().replace(/\s+/g, "_");
+    savePatch(row.id, { code });
+  }
+
+  function updateName(row: Service, val: string) {
+    savePatch(row.id, { name: val });
+  }
+
+  function updatePriceOnBlur(row: Service, val: string) {
+    savePatch(row.id, { default_price_usd: parseUSD(val) });
+  }
+
+  function bumpDown(row: Service) {
+    savePatch(row.id, { sort_order: (row.sort_order ?? 0) + 1 });
   }
 
   return (
@@ -119,7 +160,7 @@ export default function ServicesManagerPage() {
         </div>
         {msg && <div className="text-sm text-rose-400 mt-2">{msg}</div>}
         <p className="text-xs text-cx-muted mt-3">
-          Tip: <strong>Active</strong> services show up for new bookings. <strong>Inactive</strong> hides them from new use, but old appointments keep their history.
+          <strong>Active</strong> = on your menu for new bookings. <strong>Inactive</strong> = hidden from new bookings (old appointments stay the same).
         </p>
       </div>
 
@@ -142,40 +183,44 @@ export default function ServicesManagerPage() {
                 <tr key={r.id} className="border-t border-cx-border">
                   <td className="py-2 pr-4">
                     <button
-                      onClick={()=>save(r, { active: !r.active })}
+                      onClick={() => toggleActive(r)}
                       className={`btn-pill ${r.active ? "btn-pill--active" : ""}`}
                       title={r.active ? "Click to hide from new bookings" : "Click to show in new bookings"}
                     >
                       {r.active ? "Active" : "Inactive"}
                     </button>
                   </td>
+
                   <td className="py-2 pr-4">
                     <input
                       value={r.code}
-                      onChange={(e)=>save(r, { code: e.target.value.toUpperCase().replace(/\s+/g,"_") })}
+                      onChange={(e)=>updateCode(r, e.target.value)}
                       className="px-2 py-1 rounded-lg bg-cx-bg border border-cx-border text-xs outline-none w-40"
                     />
                   </td>
+
                   <td className="py-2 pr-4">
                     <input
                       value={r.name}
-                      onChange={(e)=>save(r, { name: e.target.value })}
+                      onChange={(e)=>updateName(r, e.target.value)}
                       className="px-2 py-1 rounded-lg bg-cx-bg border border-cx-border text-xs outline-none w-64"
                     />
                   </td>
+
                   <td className="py-2 pr-4">
                     <input
                       defaultValue={String(r.default_price_usd ?? 0)}
-                      onBlur={(e)=>save(r, { default_price_usd: parseUSD(e.target.value) })}
+                      onBlur={(e)=>updatePriceOnBlur(r, e.target.value)}
                       className="px-2 py-1 rounded-lg bg-cx-bg border border-cx-border text-xs outline-none w-28"
                     />
                     <div className="text-xs text-cx-muted mt-1">
                       {fmtUSD(Number(r.default_price_usd))}
                     </div>
                   </td>
+
                   <td className="py-2 pr-4">
                     <button
-                      onClick={()=>save(r, { sort_order: (r.sort_order ?? 0) + 1 })}
+                      onClick={()=>bumpDown(r)}
                       className="btn-pill"
                       title="Nudge down in lists"
                     >
@@ -184,6 +229,7 @@ export default function ServicesManagerPage() {
                   </td>
                 </tr>
               ))}
+
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={5} className="py-6 text-center text-cx-muted">
