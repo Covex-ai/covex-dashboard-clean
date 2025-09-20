@@ -6,13 +6,6 @@ import { useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
-// ====== TUNE HERE ======
-const LOGO_H = 240;        // keep the logo exactly this tall
-const TOP_BOTTOM = 0.5;    // 0.5px top + 0.5px bottom
-const HEADER_H = LOGO_H + TOP_BOTTOM * 2; // 241px total
-const CONTENT_EXTRA = 8;   // content starts a little below the logo
-const CONTENT_TOP = LOGO_H + CONTENT_EXTRA; // 248px
-
 const links = [
   { href: "/dashboard", label: "Overview" },
   { href: "/appointments", label: "Appointments" },
@@ -34,35 +27,22 @@ export default function Sidebar() {
   }
 
   return (
-    <aside
-      data-covex-sidebar
-      className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg"
-      style={
-        {
-          ["--covex-header-h" as any]: `${HEADER_H}px`,
-          ["--covex-content-top" as any]: `${CONTENT_TOP}px`,
-        } as React.CSSProperties
-      }
-    >
-      {/* Header is exactly logo height + 1px (0.5px top/bottom) */}
-      <div
-        className="border-b border-cx-border px-5 flex items-center justify-center"
-        style={{ height: HEADER_H }}
-      >
+    <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
+      {/* Normal header (80px tall), centered logo (64px tall) */}
+      <div className="h-20 px-5 flex items-center justify-center border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
             alt="COVEX"
-            width={2400}
-            height={600}
+            width={1600}
+            height={400}
+            className="opacity-95 h-16 w-auto object-contain"
             priority
             draggable={false}
             onError={() => setLogoOk(false)}
-            className="opacity-95 select-none"
-            style={{ height: LOGO_H, width: "auto", objectFit: "contain" }}
           />
         ) : (
-          <span className="text-2xl font-semibold tracking-[0.30em] text-white">COVEX</span>
+          <span className="text-2xl font-semibold tracking-[0.3em] text-white">COVEX</span>
         )}
       </div>
 
@@ -84,18 +64,9 @@ export default function Sidebar() {
       </nav>
 
       <div className="p-4 border-t border-cx-border">
-        <button onClick={signOut} className="btn-pill w-full text-left">
-          Sign out
-        </button>
+        <button onClick={signOut} className="btn-pill w-full text-left">Sign out</button>
         <div className="text-xs text-cx-muted mt-3">© {new Date().getFullYear()} Covex</div>
       </div>
-
-      {/* Nudge the main content down slightly (logo + a little) without touching layout.tsx */}
-      <style jsx global>{`
-        aside[data-covex-sidebar] + main > div {
-          padding-top: var(--covex-content-top) !important;
-        }
-      `}</style>
     </aside>
   );
 }
