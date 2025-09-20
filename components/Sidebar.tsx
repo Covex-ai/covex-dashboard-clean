@@ -28,21 +28,21 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Compact header: 80px tall; logo ~64px tall, centered */}
-      <div className="h-20 px-5 flex items-center justify-center border-b border-cx-border">
+      {/* Compact header around a big logo: header 256px, logo 240px */}
+      <div className="h-[256px] px-5 flex items-center justify-center border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
             alt="COVEX"
-            width={1600}
-            height={400}
-            className="opacity-95 h-16 w-auto object-contain"
+            width={2400}
+            height={600}
+            className="opacity-95 h-[240px] w-auto object-contain"
             priority
             draggable={false}
             onError={() => setLogoOk(false)}
           />
         ) : (
-          <span className="text-2xl font-semibold tracking-[0.3em] text-white">COVEX</span>
+          <span className="text-4xl font-semibold tracking-[0.35em] text-white">COVEX</span>
         )}
       </div>
 
