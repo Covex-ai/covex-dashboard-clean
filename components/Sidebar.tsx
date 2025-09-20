@@ -6,11 +6,11 @@ import { useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
-// ====== TUNE HERE ONLY ======
-const LOGO_H = 240;          // your logo visual height (do not change unless you want a new size)
-const TOP_BOTTOM = 2;        // 2px top + 2px bottom around the logo
-const HEADER_H = LOGO_H + TOP_BOTTOM * 2;  // 244px
-const CONTENT_EXTRA = 8;     // “a little bigger than the logo” for content offset
+// ====== TUNE HERE ======
+const LOGO_H = 240;        // keep the logo exactly this tall
+const TOP_BOTTOM = 0.5;    // 0.5px top + 0.5px bottom
+const HEADER_H = LOGO_H + TOP_BOTTOM * 2; // 241px total
+const CONTENT_EXTRA = 8;   // content starts a little below the logo
 const CONTENT_TOP = LOGO_H + CONTENT_EXTRA; // 248px
 
 const links = [
@@ -37,7 +37,6 @@ export default function Sidebar() {
     <aside
       data-covex-sidebar
       className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg"
-      // expose CSS vars so we can adjust the sibling <main> without touching layout.tsx
       style={
         {
           ["--covex-header-h" as any]: `${HEADER_H}px`,
@@ -45,7 +44,7 @@ export default function Sidebar() {
         } as React.CSSProperties
       }
     >
-      {/* Header is exactly logo height + 4px (2px top/bottom). Logo perfectly centered. */}
+      {/* Header is exactly logo height + 1px (0.5px top/bottom) */}
       <div
         className="border-b border-cx-border px-5 flex items-center justify-center"
         style={{ height: HEADER_H }}
@@ -67,7 +66,6 @@ export default function Sidebar() {
         )}
       </div>
 
-      {/* Nav starts immediately under the tight header */}
       <nav className="flex-1 p-3">
         {links.map((l) => {
           const active = pathname === l.href;
@@ -92,7 +90,7 @@ export default function Sidebar() {
         <div className="text-xs text-cx-muted mt-3">© {new Date().getFullYear()} Covex</div>
       </div>
 
-      {/* This adjusts ONLY the main content top padding, from inside Sidebar */}
+      {/* Nudge the main content down slightly (logo + a little) without touching layout.tsx */}
       <style jsx global>{`
         aside[data-covex-sidebar] + main > div {
           padding-top: var(--covex-content-top) !important;
