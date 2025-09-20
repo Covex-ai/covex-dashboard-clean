@@ -13,7 +13,7 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-// Put your real logo at /public/brand-logo.png (PNG or SVG; a light/white version looks best on black)
+// Put your actual logo file at /public/brand-logo.png (PNG or SVG)
 const LOGO_SRC = "/brand-logo.png";
 
 export default function Sidebar() {
@@ -29,23 +29,21 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Taller header to accommodate a much bigger logo */}
-      <div className="h-24 px-5 flex items-center gap-3 border-b border-cx-border">
+      {/* Taller header; logo centered and big */}
+      <div className="h-28 px-5 flex items-center justify-center border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
             alt="COVEX"
-            width={2400}              // high intrinsic size for crisp downscale
+            width={2400}
             height={600}
-            className="opacity-95 h-20 w-auto object-contain" // 80px-tall logo
+            className="opacity-95 h-24 w-auto object-contain" /* ~96px tall */
             priority
             draggable={false}
             onError={() => setLogoOk(false)}
           />
         ) : (
-          <span className="text-4xl font-semibold tracking-[0.35em] text-white">
-            COVEX
-          </span>
+          <span className="text-4xl font-semibold tracking-[0.35em] text-white">COVEX</span>
         )}
       </div>
 
@@ -57,11 +55,7 @@ export default function Sidebar() {
               key={l.href}
               href={l.href}
               className={`block px-4 py-2.5 rounded-xl mb-1 font-medium transition
-                ${
-                  active
-                    ? "bg-white/10 text-white"
-                    : "text-cx-muted hover:text-white hover:bg-white/5"
-                }`}
+                ${active ? "bg-white/10 text-white" : "text-cx-muted hover:text-white hover:bg-white/5"}`}
             >
               {l.label}
             </Link>
@@ -73,9 +67,7 @@ export default function Sidebar() {
         <button onClick={signOut} className="btn-pill w-full text-left">
           Sign out
         </button>
-        <div className="text-xs text-cx-muted mt-3">
-          © {new Date().getFullYear()} Covex
-        </div>
+        <div className="text-xs text-cx-muted mt-3">© {new Date().getFullYear()} Covex</div>
       </div>
     </aside>
   );
