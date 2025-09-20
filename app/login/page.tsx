@@ -27,22 +27,24 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      <div className="w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl p-8">
-        {/* Prominent logo without crowding the form */}
-        <div className="flex justify-center mb-6">
+      {/* Slightly tighter card padding so the large logo doesn't create extra dead space */}
+      <div className="w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl p-6">
+        <div className="flex justify-center mb-4">
           {logoOk ? (
             <Image
               src={LOGO_SRC}
               alt="COVEX"
-              width={1600}
-              height={400}
-              className="opacity-95 h-20 w-auto object-contain"
+              width={2000}
+              height={500}
+              className="opacity-95 h-40 sm:h-[200px] md:h-[240px] w-auto object-contain"
               priority
               draggable={false}
               onError={() => setLogoOk(false)}
             />
           ) : (
-            <span className="text-3xl font-semibold tracking-[0.35em] text-white">COVEX</span>
+            <span className="text-4xl sm:text-5xl font-semibold tracking-[0.35em] text-white">
+              COVEX
+            </span>
           )}
         </div>
 
