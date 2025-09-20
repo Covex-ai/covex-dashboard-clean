@@ -13,7 +13,7 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-const LOGO_SRC = "/brand-logo.png";
+const LOGO_SRC = "/brand-logo.png"; // your PNG/SVG in /public
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -28,8 +28,8 @@ export default function Sidebar() {
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Compact header around a big logo: header 256px, logo 240px */}
-      <div className="h-[256px] px-5 flex items-center justify-center border-b border-cx-border">
+      {/* Tight header = exactly the logo height; no wasted space */}
+      <div className="h-[240px] px-5 flex items-center justify-center border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
