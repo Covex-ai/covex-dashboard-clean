@@ -23,12 +23,13 @@ export default function Sidebar() {
 
   async function signOut() {
     await supabase.auth.signOut();
+    // Clear lightweight session cookie so middleware blocks protected pages again
+    document.cookie = "covex_session=; Max-Age=0; Path=/; SameSite=Lax";
     router.replace("/login");
   }
 
   return (
     <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Normal header (80px tall), centered logo (64px tall) */}
       <div className="h-20 px-5 flex items-center justify-center border-b border-cx-border">
         {logoOk ? (
           <Image
