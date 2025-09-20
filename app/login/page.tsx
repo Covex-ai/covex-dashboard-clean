@@ -6,10 +6,8 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-
-// Adjust these two if you ever want tiny tweaks later
-const LOGO_HEIGHT_PX = 96; // keeps the logo a good size without crowding
-const CARD_PADDING = "p-6 md:p-8"; // card inner padding
+const LOGO_HEIGHT_PX = 96;         // adjust if you want
+const CARD_PADDING = "p-6 md:p-8"; // adjust if you want
 
 export default function LoginPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
@@ -25,8 +23,13 @@ export default function LoginPage() {
     setMsg(null);
     const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
     setBusy(false);
-    if (error) setMsg(error.message);
-    else router.replace("/dashboard");
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
+    // Set lightweight session cookie so middleware allows app pages
+    document.cookie = "covex_session=1; Max-Age=2592000; Path=/; SameSite=Lax";
+    router.replace("/dashboard");
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
@@ -36,7 +39,6 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6" onKeyDown={onKeyDown}>
       <div className={`w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Clean, centered logo with normal spacing */}
         <div className="flex justify-center mb-5">
           {logoOk ? (
             <Image
