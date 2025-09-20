@@ -27,17 +27,16 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* Tighter padding: no giant gray band */}
-      <div className="w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl px-5 py-4">
-        {/* Keep big logo; reduce spacing above/below */}
-        <div className="flex justify-center mb-2">
+      {/* Tighter padding so the big logo doesn't create a huge gray band */}
+      <div className="w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl px-5 pt-3 pb-4">
+        {/* Same big logo; minimal spacing */}
+        <div className="flex justify-center mb-2 -mt-1">
           {logoOk ? (
             <Image
               src={LOGO_SRC}
               alt="COVEX"
               width={2000}
               height={500}
-              /* SAME big sizes you liked */
               className="opacity-95 h-40 sm:h-[200px] md:h-[240px] w-auto object-contain"
               priority
               draggable={false}
