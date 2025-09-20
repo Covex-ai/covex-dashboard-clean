@@ -13,7 +13,7 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-const LOGO_SRC = "/brand-logo.png"; // your PNG/SVG in /public
+const LOGO_SRC = "/brand-logo.png"; // keep your PNG/SVG here
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -27,8 +27,8 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg relative overflow-visible">
-      {/* Keep header compact so nav sits high */}
+    <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg relative">
+      {/* Very compact header; logo is absolutely positioned and gets tiny margins */}
       <div className="relative h-14 px-5 border-b border-cx-border">
         {logoOk ? (
           <Image
@@ -36,8 +36,8 @@ export default function Sidebar() {
             alt="COVEX"
             width={2400}
             height={600}
-            // SAME big visual size (240px tall), just nudged a bit lower for a small top gap.
-            className="pointer-events-none select-none absolute left-1/2 -translate-x-1/2 top-[56%] -translate-y-1/2 h-[240px] w-auto object-contain opacity-95"
+            // SAME visual size; add a bit of space above (top-2) and below (shadowed by its own height)
+            className="pointer-events-none select-none absolute left-1/2 -translate-x-1/2 top-2 h-[240px] w-auto object-contain opacity-95"
             priority
             onError={() => setLogoOk(false)}
             draggable={false}
@@ -49,6 +49,7 @@ export default function Sidebar() {
         )}
       </div>
 
+      {/* Nav starts immediately under the thin header */}
       <nav className="flex-1 p-3">
         {links.map((l) => {
           const active = pathname === l.href;
@@ -67,9 +68,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="p-4 border-t border-cx-border">
-        <button onClick={signOut} className="btn-pill w-full text-left">
-          Sign out
-        </button>
+        <button onClick={signOut} className="btn-pill w-full text-left">Sign out</button>
         <div className="text-xs text-cx-muted mt-3">© {new Date().getFullYear()} Covex</div>
       </div>
     </aside>
