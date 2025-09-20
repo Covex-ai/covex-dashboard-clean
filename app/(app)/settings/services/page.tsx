@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 type Biz = { id: string };
@@ -48,6 +49,7 @@ export default function ServicesManagerPage() {
 
   useEffect(() => { load(); }, []);
 
+  // realtime refresh
   useEffect(() => {
     const ch = supabase
       .channel("rt-services")
@@ -81,6 +83,15 @@ export default function ServicesManagerPage() {
 
   return (
     <div className="space-y-6">
+      {/* Header with Back button */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Link href="/settings" className="btn-pill">← Back</Link>
+          <h1 className="text-lg font-semibold">Services</h1>
+        </div>
+      </div>
+
+      {/* Add new service */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <h2 className="font-semibold mb-3">Add service</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -107,8 +118,12 @@ export default function ServicesManagerPage() {
           </button>
         </div>
         {msg && <div className="text-sm text-rose-400 mt-2">{msg}</div>}
+        <p className="text-xs text-cx-muted mt-3">
+          Tip: <strong>Active</strong> services show up for new bookings. <strong>Inactive</strong> hides them from new use, but old appointments keep their history.
+        </p>
       </div>
 
+      {/* List + edit services */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <h2 className="font-semibold mb-3">Your services</h2>
         <div className="overflow-x-auto">
@@ -129,6 +144,7 @@ export default function ServicesManagerPage() {
                     <button
                       onClick={()=>save(r, { active: !r.active })}
                       className={`btn-pill ${r.active ? "btn-pill--active" : ""}`}
+                      title={r.active ? "Click to hide from new bookings" : "Click to show in new bookings"}
                     >
                       {r.active ? "Active" : "Inactive"}
                     </button>
@@ -158,7 +174,11 @@ export default function ServicesManagerPage() {
                     </div>
                   </td>
                   <td className="py-2 pr-4">
-                    <button onClick={()=>save(r, { sort_order: (r.sort_order ?? 0) + 1 })} className="btn-pill">
+                    <button
+                      onClick={()=>save(r, { sort_order: (r.sort_order ?? 0) + 1 })}
+                      className="btn-pill"
+                      title="Nudge down in lists"
+                    >
                       Bump down
                     </button>
                   </td>
