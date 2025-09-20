@@ -13,7 +13,7 @@ const links = [
   { href: "/settings", label: "Settings" },
 ];
 
-const LOGO_SRC = "/brand-logo.png"; // your PNG/SVG in /public
+const LOGO_SRC = "/brand-logo.png";
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -27,25 +27,29 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg">
-      {/* Tight header = exactly the logo height; no wasted space */}
-      <div className="h-[240px] px-5 flex items-center justify-center border-b border-cx-border">
+    <aside className="hidden md:flex w-64 flex-col border-r border-cx-border bg-cx-bg relative overflow-visible">
+      {/* Compact header (56px) — logo is absolutely positioned and can be much taller */}
+      <div className="relative h-14 px-5 border-b border-cx-border">
         {logoOk ? (
           <Image
             src={LOGO_SRC}
             alt="COVEX"
             width={2400}
             height={600}
-            className="opacity-95 h-[240px] w-auto object-contain"
+            /* LOGO stays big but does NOT consume vertical flow space */
+            className="pointer-events-none select-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 h-[140px] w-auto object-contain opacity-95"
             priority
-            draggable={false}
             onError={() => setLogoOk(false)}
+            draggable={false}
           />
         ) : (
-          <span className="text-4xl font-semibold tracking-[0.35em] text-white">COVEX</span>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="text-2xl font-semibold tracking-[0.3em] text-white">COVEX</span>
+          </div>
         )}
       </div>
 
+      {/* Nav starts immediately — no extra dead space */}
       <nav className="flex-1 p-3">
         {links.map((l) => {
           const active = pathname === l.href;
