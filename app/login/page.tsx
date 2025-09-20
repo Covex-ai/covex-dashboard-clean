@@ -27,10 +27,11 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* Tighter padding so the big logo doesn't create a huge gray band */}
-      <div className="w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl px-5 pt-3 pb-4">
-        {/* Same big logo; minimal spacing */}
-        <div className="flex justify-center mb-2 -mt-1">
+      {/* Make the card relative so we can absolutely position the logo */}
+      <div className="relative w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl px-5 pb-5
+                      pt-[200px] sm:pt-[240px] md:pt-[280px]">
+        {/* SAME logo size; now absolutely positioned to kill the big gray band */}
+        <div className="absolute left-1/2 -translate-x-1/2 top-4">
           {logoOk ? (
             <Image
               src={LOGO_SRC}
@@ -43,9 +44,7 @@ export default function LoginPage() {
               onError={() => setLogoOk(false)}
             />
           ) : (
-            <span className="text-3xl sm:text-4xl font-semibold tracking-[0.35em] text-white">
-              COVEX
-            </span>
+            <span className="text-3xl sm:text-4xl font-semibold tracking-[0.35em] text-white">COVEX</span>
           )}
         </div>
 
