@@ -1,219 +1,240 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
+import { fmtUSD, normalizeService, priceFor, serviceLabelFor, toNumber, type NormalizedService } from "@/lib/pricing";
 
-type Appt = {
+type View = "today" | "future" | "all";
+type Range = "7d" | "30d" | "90d";
+type StatusOpt = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed";
+
+type Row = {
   id: number;
-  start_ts: string; // ISO
+  start_ts: string;
   end_ts: string | null;
-  status: string | null;
+  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | null;
+  service_raw: string | null;
+  normalized_service: NormalizedService | null;
+  price_usd: number | string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
-  service_raw: string | null;
-  normalized_service: string | null;
-  price_usd: number | string | null;
-  address_text: string | null;
 };
 
-type Biz = { is_mobile: boolean };
-
-type Tab = "today" | "future" | "past";
-type StatusFilter = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed";
-
-// how far back “Past” goes
-const PAST_DAYS = 30;
-
-function startOfToday() {
+function startOfTodayISO() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  return d;
-}
-function isoAtStartOfToday() {
-  return startOfToday().toISOString();
-}
-function isoAtStartOfTomorrow() {
-  const d = startOfToday();
-  d.setDate(d.getDate() + 1);
   return d.toISOString();
 }
-function isoDaysAgoStart(n: number) {
-  const d = startOfToday();
+function endOfTodayISO() {
+  const d = new Date();
+  d.setHours(23, 59, 59, 999);
+  return d.toISOString();
+}
+function daysAgoISO(n: number) {
+  const d = new Date();
   d.setDate(d.getDate() - n);
+  return d.toISOString();
+}
+function tomorrowStartISO() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(0, 0, 0, 0);
   return d.toISOString();
 }
 
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [tab, setTab] = useState<Tab>("today"); // default Today
-  const [isMobile, setIsMobile] = useState(false);
-  const [rows, setRows] = useState<Appt[]>([]);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
+  const [view, setView] = useState<View>("today");      // DEFAULT = Today
+  const [range, setRange] = useState<Range>("7d");      // for list ranges
+  const [statusFilter, setStatusFilter] = useState<StatusOpt>("All");
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  async function loadBiz() {
-    const { data } = await supabase.from("businesses").select("is_mobile").single();
-    setIsMobile(Boolean((data as Biz)?.is_mobile));
-  }
+  async function load() {
+    setLoading(true);
+    let query = supabase.from("appointments").select(
+      "id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164"
+    );
 
-  async function loadAppts() {
-    const todayISO = isoAtStartOfToday();
-    const tomorrowISO = isoAtStartOfTomorrow();
-    const pastStartISO = isoDaysAgoStart(PAST_DAYS);
-
-    let q = supabase
-      .from("appointments")
-      .select("id,start_ts,end_ts,status,caller_name,caller_phone_e164,service_raw,normalized_service,price_usd,address_text");
-
-    if (tab === "today") {
-      // >= today 00:00 and < tomorrow 00:00
-      q = q.gte("start_ts", todayISO).lt("start_ts", tomorrowISO).order("start_ts", { ascending: true });
-    } else if (tab === "future") {
-      // future: >= tomorrow 00:00
-      q = q.gte("start_ts", tomorrowISO).order("start_ts", { ascending: true });
+    if (view === "today") {
+      query = query.gte("start_ts", startOfTodayISO()).lte("start_ts", endOfTodayISO());
+    } else if (view === "future") {
+      query = query.gte("start_ts", tomorrowStartISO());
     } else {
-      // past: last PAST_DAYS days before today
-      q = q.gte("start_ts", pastStartISO).lt("start_ts", todayISO).order("start_ts", { ascending: false });
+      // all (bounded by range)
+      const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+      query = query.gte("start_ts", daysAgoISO(days));
     }
 
-    const { data } = await q;
-    setRows((data as any) ?? []);
+    query = query.order("start_ts", { ascending: true });
+    const { data, error } = await query;
+    if (!error && data) setRows(data as any);
+    setLoading(false);
   }
 
-  useEffect(() => {
-    loadBiz();
-  }, []);
-  useEffect(() => {
-    loadAppts();
-  }, [tab]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, range, statusFilter, q]);
 
-  // Realtime refresh
+  // realtime refresh
   useEffect(() => {
     const ch = supabase
       .channel("rt-appointments")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => loadAppts())
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => load())
       .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [tab]);
+    return () => { supabase.removeChannel(ch); };
+  }, []);
 
-  function StatusPill({ s }: { s: string | null }) {
-    const v = (s ?? "").toLowerCase();
-    const base = "px-2 py-1 rounded-lg text-xs font-medium border border-cx-border";
-    if (v === "booked") return <span className={`${base} text-emerald-400`}>Booked</span>;
-    if (v === "rescheduled") return <span className={`${base} text-amber-300`}>Rescheduled</span>;
-    if (v === "cancelled") return <span className={`${base} text-rose-400`}>Cancelled</span>;
-    if (v === "completed") return <span className={`${base} text-zinc-300`}>Completed</span>;
-    return <span className={`${base} text-cx-muted`}>{s ?? "-"}</span>;
-  }
-
-  // client-side status filter
-  const filtered = useMemo(() => {
-    if (statusFilter === "All") return rows;
-    const want = statusFilter.toLowerCase();
-    return rows.filter(r => (r.status ?? "").toLowerCase() === want);
-  }, [rows, statusFilter]);
+  // client filters
+  const filtered = rows.filter(r => {
+    // status filter
+    if (statusFilter !== "All" && r.status !== statusFilter) return false;
+    // search
+    if (q.trim()) {
+      const hay =
+        `${r.caller_name ?? ""} ${r.caller_phone_e164 ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
+      if (!hay.includes(q.trim().toLowerCase())) return false;
+    }
+    return true;
+  });
 
   return (
-    <div className="space-y-6">
-      {/* Tabs + Status filter */}
-      <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-4">
+      {/* Top bar: tabs + New button */}
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setTab("today")}
-            className={`btn-pill ${tab === "today" ? "btn-pill--active" : ""}`}
+            className={`btn-pill ${view === "today" ? "btn-pill--active" : ""}`}
+            onClick={() => setView("today")}
           >
             Today
           </button>
           <button
             type="button"
-            onClick={() => setTab("future")}
-            className={`btn-pill ${tab === "future" ? "btn-pill--active" : ""}`}
+            className={`btn-pill ${view === "future" ? "btn-pill--active" : ""}`}
+            onClick={() => setView("future")}
           >
             Future
           </button>
           <button
             type="button"
-            onClick={() => setTab("past")}
-            className={`btn-pill ${tab === "past" ? "btn-pill--active" : ""}`}
+            className={`btn-pill ${view === "all" ? "btn-pill--active" : ""}`}
+            onClick={() => setView("all")}
           >
-            Past {PAST_DAYS}d
+            All
+          </button>
+
+          {/* Range pills only really matter for "All" view, but keep visible for convenience */}
+          <button
+            type="button"
+            className={`btn-pill ${range === "7d" ? "btn-pill--active" : ""}`}
+            onClick={() => setRange("7d")}
+          >
+            7d
+          </button>
+          <button
+            type="button"
+            className={`btn-pill ${range === "30d" ? "btn-pill--active" : ""}`}
+            onClick={() => setRange("30d")}
+          >
+            30d
+          </button>
+          <button
+            type="button"
+            className={`btn-pill ${range === "90d" ? "btn-pill--active" : ""}`}
+            onClick={() => setRange("90d")}
+          >
+            90d
           </button>
         </div>
 
-        {/* Status filter (dark, readable) */}
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-cx-muted text-sm">Status</span>
+        {/* Right controls */}
+        <div className="flex items-center gap-2">
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-            className="btn-pill bg-white/5 text-white [color-scheme:dark]"
-            title="Filter by status"
+            onChange={(e) => setStatusFilter(e.target.value as StatusOpt)}
+            className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none [color-scheme:dark]"
           >
-            {(["All","Booked","Rescheduled","Cancelled","Completed"] as const).map(s => (
+            {["All","Booked","Rescheduled","Cancelled","Completed"].map(s => (
               <option key={s} value={s} className="text-black bg-white">{s}</option>
             ))}
           </select>
+
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search name, phone, service"
+            className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none w-64"
+          />
+
+          {/* The NEW button you needed */}
+          <Link href="/appointments/new" className="btn-pill btn-pill--active">
+            + New
+          </Link>
         </div>
       </div>
 
       {/* Table */}
-      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <h3 className="font-semibold mb-3">
-          {tab === "today" ? "Today’s appointments" : tab === "future" ? "Upcoming appointments" : `Past ${PAST_DAYS} days`}
-        </h3>
-
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="text-cx-muted">
-              <tr className="text-left">
-                <th className="py-2 pr-4">Date</th>
-                <th className="py-2 pr-4">Time</th>
-                <th className="py-2 pr-4">Name</th>
-                <th className="py-2 pr-4">Phone</th>
-                {isMobile && <th className="py-2 pr-4">Address</th>}
-                <th className="py-2 pr-4">Service</th>
-                <th className="py-2 pr-4">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((r) => {
-                const d = new Date(r.start_ts);
-                const date = d.toLocaleDateString();
-                const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-                const svc = r.service_raw || r.normalized_service || "—";
-
-                return (
-                  <tr key={r.id} className="border-t border-cx-border">
-                    <td className="py-2 pr-4">{date}</td>
-                    <td className="py-2 pr-4">{time}</td>
-                    <td className="py-2 pr-4">{r.caller_name ?? "—"}</td>
-                    <td className="py-2 pr-4">{r.caller_phone_e164 ?? "—"}</td>
-                    {isMobile && <td className="py-2 pr-4">{r.address_text ?? "—"}</td>}
-                    <td className="py-2 pr-4">{svc}</td>
-                    <td className="py-2 pr-4">
-                      <StatusPill s={r.status} />
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {filtered.length === 0 && (
-                <tr>
-                  <td className="py-6 text-center text-cx-muted" colSpan={isMobile ? 7 : 6}>
-                    {tab === "today"
-                      ? "No appointments today."
-                      : tab === "future"
-                      ? "No upcoming appointments."
-                      : `No appointments in the past ${PAST_DAYS} days.`}
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-0 overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="text-cx-muted">
+            <tr className="text-left">
+              <th className="py-3 pl-4 pr-4">Date</th>
+              <th className="py-3 pr-4">Time</th>
+              <th className="py-3 pr-4">Service</th>
+              <th className="py-3 pr-4">Name</th>
+              <th className="py-3 pr-4">Phone</th>
+              <th className="py-3 pr-4">Status</th>
+              <th className="py-3 pr-4">Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r) => {
+              const ns = r.normalized_service ?? normalizeService(r.service_raw);
+              return (
+                <tr key={r.id} className="border-t border-cx-border">
+                  <td className="py-2 pl-4 pr-4">{new Date(r.start_ts).toLocaleDateString()}</td>
+                  <td className="py-2 pr-4">
+                    {new Date(r.start_ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
                   </td>
+                  <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
+                  <td className="py-2 pr-4">{r.caller_name ?? "-"}</td>
+                  <td className="py-2 pr-4">{r.caller_phone_e164 ?? "-"}</td>
+                  <td className="py-2 pr-4">
+                    <StatusBadge status={r.status ?? "Booked"} />
+                  </td>
+                  <td className="py-2 pr-4">{fmtUSD(priceFor(ns, toNumber(r.price_usd)))}</td>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              );
+            })}
+            {!loading && filtered.length === 0 && (
+              <tr>
+                <td colSpan={7} className="py-8 text-center text-cx-muted">
+                  No results.
+                </td>
+              </tr>
+            )}
+            {loading && (
+              <tr>
+                <td colSpan={7} className="py-8 text-center text-cx-muted">
+                  Loading…
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = (status || "").toLowerCase();
+  let bg = "bg-white/10 text-white";
+  if (s === "booked") bg = "bg-emerald-600/25 text-emerald-300 border border-emerald-700/40";
+  if (s === "rescheduled") bg = "bg-amber-600/25 text-amber-300 border border-amber-700/40";
+  if (s === "cancelled") bg = "bg-rose-600/25 text-rose-300 border border-rose-700/40";
+  if (s === "completed") bg = "bg-zinc-600/25 text-zinc-200 border border-zinc-700/40";
+  return <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${bg}`}>{status}</span>;
 }
