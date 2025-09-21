@@ -1,68 +1,78 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-function base() {
-  const b = process.env.CAL_API_BASE || "https://api.cal.com";
-  return b.replace(/\/+$/, "");
-}
-function calHeaders() {
-  return {
-    "content-type": "application/json",
-    Authorization: `Bearer ${process.env.CAL_API_KEY || ""}`,
-  };
-}
+const CAL_BASE = "https://api.cal.com/v2";
 
-/**
- * Body:
- * { eventTypeId: number, start: ISO, end: ISO, timeZone?: string }
- *
- * We try v2 first, then v1 fallback. Return { ok, data: { available, slots } }.
- */
-export async function POST(req: Request) {
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const eventTypeId = url.searchParams.get("eventTypeId"); // required
+  const timeZone = url.searchParams.get("timeZone") ?? "America/New_York";
+
+  // Optional window (defaults = now → +30 days)
+  const startQ = url.searchParams.get("start");
+  const endQ = url.searchParams.get("end");
+
+  if (!eventTypeId) {
+    return NextResponse.json(
+      { error: "Missing query param: eventTypeId" },
+      { status: 400 }
+    );
+  }
+
+  const now = new Date();
+  const startISO = startQ ?? now.toISOString();
+  const endISO =
+    endQ ??
+    new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(); // +30d
+
   try {
-    const { eventTypeId, start, end, timeZone } = await req.json();
-    if (!eventTypeId || !start || !end) {
+    const res = await fetch(
+      `${CAL_BASE}/slots?eventTypeId=${encodeURIComponent(
+        eventTypeId
+      )}&start=${encodeURIComponent(startISO)}&end=${encodeURIComponent(
+        endISO
+      )}&timeZone=${encodeURIComponent(timeZone)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.CALCOM_API_KEY ?? ""}`,
+          "cal-api-version":
+            process.env.CALCOM_API_VERSION_SLOTS ?? "2024-09-04",
+        },
+        cache: "no-store",
+      }
+    );
+
+    const text = await res.text();
+    let json: any;
+    try {
+      json = JSON.parse(text);
+    } catch {
       return NextResponse.json(
-        { ok: false, error: "Missing eventTypeId/start/end" },
-        { status: 400 }
+        { error: "Cal.com returned non-JSON", raw: text },
+        { status: 502 }
       );
     }
-    const tz = timeZone || process.env.CAL_TIMEZONE || "America/New_York";
 
-    // v2
-    let url = `${base()}/v2/availability/slots?eventTypeId=${encodeURIComponent(
-      eventTypeId
-    )}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(
-      end
-    )}&timeZone=${encodeURIComponent(tz)}`;
-    let r = await fetch(url, { headers: calHeaders() });
-    let data: any = null;
-
-    if (r.ok) {
-      data = await r.json().catch(() => ({}));
-    } else {
-      // v1 fallback
-      url = `${base()}/v1/availability/slots?eventTypeId=${encodeURIComponent(
-        eventTypeId
-      )}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(
-        end
-      )}&timeZone=${encodeURIComponent(tz)}`;
-      r = await fetch(url, { headers: calHeaders() });
-      data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        return NextResponse.json(
-          { ok: false, error: data?.error || "Cal.com availability failed" },
-          { status: 502 }
-        );
-      }
+    if (!res.ok) {
+      return NextResponse.json(
+        { error: json?.error ?? json, status: res.status },
+        { status: 502 }
+      );
     }
 
-    const slots: string[] =
-      data?.slots?.map((s: any) => (typeof s === "string" ? s : s?.start)) ?? [];
-    const wanted = new Date(start).toISOString();
-    const available = slots.some((s) => new Date(s).toISOString() === wanted);
+    // Cal.com v2 typically replies with { status:'success', data: { slots: [...] } }
+    // Each slot is either an ISO string or { start: ISO, end: ISO }. Normalize to ISO starts.
+    const slotsArray: string[] =
+      Array.isArray(json?.data?.slots)
+        ? json.data.slots.map((s: any) => (typeof s === "string" ? s : s?.start)).filter(Boolean)
+        : Array.isArray(json?.slots)
+        ? json.slots.map((s: any) => (typeof s === "string" ? s : s?.start)).filter(Boolean)
+        : [];
 
-    return NextResponse.json({ ok: true, data: { available, slots } });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
+    return NextResponse.json({ slots: slotsArray });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: "Failed to reach Cal.com", detail: String(err) },
+      { status: 502 }
+    );
   }
 }
