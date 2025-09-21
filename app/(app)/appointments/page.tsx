@@ -2,270 +2,159 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import RangePills from "@/components/RangePills";
-import {
-  fmtUSD,
-  normalizeService,
-  priceFor,
-  serviceLabelFor,
-  toNumber,
-  type NormalizedService,
-} from "@/lib/pricing";
 
-type Range = "7d" | "30d" | "90d";
-type Status = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed";
-type View = "Today" | "Future" | "All";
-
-type ApptRow = {
+type Appt = {
   id: number;
-  start_ts: string | null;
+  start_ts: string; // ISO
   end_ts: string | null;
-  created_at?: string | null;
-  name: string | null;
-  phone: string | null;
-  caller_name?: string | null;
-  caller_phone_e164?: string | null;
   status: string | null;
+  caller_name: string | null;
+  caller_phone_e164: string | null;
   service_raw: string | null;
-  normalized_service: NormalizedService | null;
+  normalized_service: string | null;
   price_usd: number | string | null;
+  address_text: string | null;
 };
 
-function normalizeStatus(s: string | null | undefined): Status | null {
-  if (!s) return null;
-  const t = s.trim().toLowerCase();
-  if (t === "booked") return "Booked";
-  if (t === "rescheduled") return "Rescheduled";
-  if (t === "cancelled") return "Cancelled";
-  if (t === "completed") return "Completed";
-  return null;
-}
+type Biz = { is_mobile: boolean };
 
-function bestWhen(row: ApptRow): Date | null {
-  const a = row.start_ts ? new Date(row.start_ts) : null;
-  const b = row.end_ts ? new Date(row.end_ts) : null;
-  const c = row.created_at ? new Date(row.created_at) : null;
-  return a ?? b ?? c ?? null;
-}
+type Tab = "today" | "future";
 
-function isCompleted(row: ApptRow): boolean {
-  const st = normalizeStatus(row.status);
-  if (st === "Cancelled") return false;
-  if (st === "Completed") return true;
-  const when = bestWhen(row);
-  return !!when && when.getTime() < Date.now();
+function startOfTodayISO() {
+  const d = new Date();
+  d.setHours(0,0,0,0);
+  return d.toISOString();
 }
-
-function StatusBadge({ value }: { value: Status | null }) {
-  const base =
-    "inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-medium border";
-  if (value === "Booked")
-    return (
-      <span className={`${base} border-emerald-700/40 bg-emerald-500/15 text-emerald-300`}>
-        Booked
-      </span>
-    );
-  if (value === "Rescheduled")
-    return (
-      <span className={`${base} border-amber-700/40 bg-amber-500/15 text-amber-300`}>
-        Rescheduled
-      </span>
-    );
-  if (value === "Cancelled")
-    return (
-      <span className={`${base} border-rose-700/40 bg-rose-500/15 text-rose-300`}>
-        Cancelled
-      </span>
-    );
-  if (value === "Completed")
-    return (
-      <span className={`${base} border-white/20 bg-white/10 text-cx-muted`}>
-        Completed
-      </span>
-    );
-  return <span className={`${base} border-cx-border text-cx-muted`}>-</span>;
+function startOfTomorrowISO() {
+  const d = new Date();
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate() + 1);
+  return d.toISOString();
 }
 
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [view, setView] = useState<View>("Today"); // default tab
-  const [range, setRange] = useState<Range>("30d"); // only used when view==="All"
-  const [status, setStatus] = useState<Status>("All");
-  const [q, setQ] = useState("");
-  const [rows, setRows] = useState<ApptRow[]>([]);
+  const [tab, setTab] = useState<Tab>("today"); // default Today
+  const [isMobile, setIsMobile] = useState(false);
+  const [rows, setRows] = useState<Appt[]>([]);
 
-  function daysFor(r: Range) {
-    return r === "7d" ? 7 : r === "30d" ? 30 : 90;
+  async function loadBiz() {
+    const { data } = await supabase.from("businesses").select("is_mobile").single();
+    setIsMobile(Boolean((data as Biz)?.is_mobile));
   }
-  const startOfToday = () => {
-    const n = new Date();
-    return new Date(n.getFullYear(), n.getMonth(), n.getDate());
-  };
-  const endOfToday = () => {
-    const n = new Date();
-    return new Date(n.getFullYear(), n.getMonth(), n.getDate(), 23, 59, 59, 999);
-  };
 
-  async function load() {
-    // Fetch a reasonable window; filter client-side for view/status/search
-    const baseDays = daysFor(range);
-    const from = new Date();
-    from.setDate(from.getDate() - baseDays);
+  async function loadAppts() {
+    const today = startOfTodayISO();
+    const tomorrow = startOfTomorrowISO();
 
-    const { data, error } = await supabase
+    let q = supabase
       .from("appointments")
-      .select("*")
-      .gte("start_ts", from.toISOString())
-      .order("start_ts", { ascending: false });
+      .select("id,start_ts,end_ts,status,caller_name,caller_phone_e164,service_raw,normalized_service,price_usd,address_text")
+      .order("start_ts", { ascending: true });
 
-    if (error) return;
-
-    const all = (data as unknown as ApptRow[]) ?? [];
-
-    // 1) View filter
-    const sToday = startOfToday().getTime();
-    const eToday = endOfToday().getTime();
-    let byView: ApptRow[] = all;
-
-    if (view === "Today") {
-      byView = all.filter((r) => {
-        const when = bestWhen(r);
-        if (!when) return false;
-        const t = when.getTime();
-        return t >= sToday && t <= eToday;
-      });
-    } else if (view === "Future") {
-      byView = all.filter((r) => {
-        const when = bestWhen(r);
-        if (!when) return false;
-        return when.getTime() > eToday;
-      });
+    if (tab === "today") {
+      // >= today 00:00 and < tomorrow 00:00
+      q = q.gte("start_ts", today).lt("start_ts", tomorrow);
+    } else {
+      // future: >= tomorrow 00:00
+      q = q.gte("start_ts", tomorrow);
     }
-    // view === "All" -> keep base window
 
-    // 2) Status filter
-    let byStatus: ApptRow[];
-    if (status === "All") byStatus = byView;
-    else if (status === "Completed") byStatus = byView.filter(isCompleted);
-    else byStatus = byView.filter((r) => normalizeStatus(r.status) === status);
-
-    // 3) Search (supports caller_* columns)
-    const final = q.trim()
-      ? byStatus.filter((r) => {
-          const name = r.name ?? r.caller_name ?? "";
-          const phone = r.phone ?? r.caller_phone_e164 ?? "";
-          const hay = `${name} ${phone} ${r.service_raw ?? ""}`.toLowerCase();
-          return hay.includes(q.toLowerCase());
-        })
-      : byStatus;
-
-    setRows(final);
+    const { data } = await q;
+    setRows((data as any) ?? []);
   }
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, range, status, q]);
+  useEffect(() => { loadBiz(); }, []);
+  useEffect(() => { loadAppts(); }, [tab]);
 
+  // Realtime refresh
   useEffect(() => {
     const ch = supabase
       .channel("rt-appointments")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => loadAppts())
       .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => { supabase.removeChannel(ch); };
+  }, [tab]);
+
+  function StatusPill({ s }: { s: string | null }) {
+    const v = (s ?? "").toLowerCase();
+    const base = "px-2 py-1 rounded-lg text-xs font-medium border border-cx-border";
+    if (v === "booked") return <span className={`${base} text-emerald-400`}>Booked</span>;
+    if (v === "rescheduled") return <span className={`${base} text-amber-300`}>Rescheduled</span>;
+    if (v === "cancelled") return <span className={`${base} text-rose-400`}>Cancelled</span>;
+    if (v === "completed") return <span className={`${base} text-zinc-300`}>Completed</span>;
+    return <span className={`${base} text-cx-muted`}>{s ?? "-"}</span>;
+    }
 
   return (
-    <div className="space-y-4">
-      {/* Controls row */}
-      <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-        <div className="flex flex-wrap gap-2">
-          {/* View tabs */}
-          {(["Today", "Future", "All"] as View[]).map((v) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => setView(v)}
-              className={`btn-pill ${view === v ? "btn-pill--active" : ""}`}
-            >
-              {v}
-            </button>
-          ))}
-
-          {/* Range pills only when on All (so you never see two “actives” at once) */}
-          {view === "All" && <RangePills value={range} onChange={setRange} />}
-
-          {/* Legible native select */}
-          <select
-            className="btn-pill bg-white/5 text-white [color-scheme:dark]"
-            value={status}
-            onChange={(e) => setStatus(e.target.value as Status)}
-          >
-            {["All", "Booked", "Rescheduled", "Cancelled", "Completed"].map((s) => (
-              <option key={s} value={s} className="text-black bg-white">
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Prevent cutoff on desktop */}
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search name, phone, service"
-          className="px-3 py-2 rounded-xl bg-cx-surface border border-cx-border text-sm outline-none w-full md:w-80"
-        />
+    <div className="space-y-6">
+      {/* Tabs */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={()=>setTab("today")}
+          className={`btn-pill ${tab === "today" ? "btn-pill--active" : ""}`}
+        >
+          Today
+        </button>
+        <button
+          type="button"
+          onClick={()=>setTab("future")}
+          className={`btn-pill ${tab === "future" ? "btn-pill--active" : ""}`}
+        >
+          Future
+        </button>
       </div>
 
       {/* Table */}
-      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="text-cx-muted">
-            <tr className="text-left">
-              <th className="py-2 pr-4">Date</th>
-              <th className="py-2 pr-4">Time</th>
-              <th className="py-2 pr-4">Service</th>
-              <th className="py-2 pr-4">Name</th>
-              <th className="py-2 pr-4">Phone</th>
-              <th className="py-2 pr-4">Status</th>
-              <th className="py-2 pr-4">Price</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const ns = r.normalized_service ?? normalizeService(r.service_raw);
-              const st = normalizeStatus(r.status) ?? (isCompleted(r) ? "Completed" : null);
-              const when = bestWhen(r);
-              const name = r.name ?? r.caller_name ?? "—";
-              const phone = r.phone ?? r.caller_phone_e164 ?? "—";
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+        <h3 className="font-semibold mb-3">
+          {tab === "today" ? "Today’s appointments" : "Upcoming appointments"}
+        </h3>
 
-              return (
-                <tr key={r.id} className="border-t border-cx-border">
-                  <td className="py-2 pr-4">{when ? when.toLocaleDateString() : "—"}</td>
-                  <td className="py-2 pr-4">
-                    {when ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—"}
-                  </td>
-                  <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
-                  <td className="py-2 pr-4">{name}</td>
-                  <td className="py-2 pr-4">{phone}</td>
-                  <td className="py-2 pr-4"><StatusBadge value={st} /></td>
-                  <td className="py-2 pr-4">{fmtUSD(priceFor(ns, toNumber(r.price_usd)))}</td>
-                </tr>
-              );
-            })}
-            {rows.length === 0 && (
-              <tr>
-                <td className="py-6 text-center text-cx-muted" colSpan={7}>
-                  No results.
-                </td>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-cx-muted">
+              <tr className="text-left">
+                <th className="py-2 pr-4">Date</th>
+                <th className="py-2 pr-4">Time</th>
+                <th className="py-2 pr-4">Name</th>
+                <th className="py-2 pr-4">Phone</th>
+                {isMobile && <th className="py-2 pr-4">Address</th>}
+                <th className="py-2 pr-4">Service</th>
+                <th className="py-2 pr-4">Status</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const d = new Date(r.start_ts);
+                const date = d.toLocaleDateString();
+                const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+                const svc = r.service_raw || r.normalized_service || "—";
+
+                return (
+                  <tr key={r.id} className="border-t border-cx-border">
+                    <td className="py-2 pr-4">{date}</td>
+                    <td className="py-2 pr-4">{time}</td>
+                    <td className="py-2 pr-4">{r.caller_name ?? "—"}</td>
+                    <td className="py-2 pr-4">{r.caller_phone_e164 ?? "—"}</td>
+                    {isMobile && <td className="py-2 pr-4">{r.address_text ?? "—"}</td>}
+                    <td className="py-2 pr-4">{svc}</td>
+                    <td className="py-2 pr-4"><StatusPill s={r.status} /></td>
+                  </tr>
+                );
+              })}
+
+              {rows.length === 0 && (
+                <tr>
+                  <td className="py-6 text-center text-cx-muted" colSpan={isMobile ? 7 : 6}>
+                    {tab === "today" ? "No appointments today." : "No upcoming appointments."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
