@@ -17,6 +17,20 @@ function dayRangeUTC(dateISO?: string) {
   return { startISO, endISO };
 }
 
+function normalizeSlots(json: any): string[] {
+  // v2 usually returns { data: { slots: [{start, end}, ...] } }
+  const raw =
+    Array.isArray(json?.data?.slots)
+      ? json.data.slots
+      : Array.isArray(json?.slots)
+      ? json.slots
+      : [];
+
+  return raw
+    .map((s: any) => (typeof s === "string" ? s : s?.start))
+    .filter(Boolean);
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const eventTypeId = url.searchParams.get("eventTypeId");
@@ -35,36 +49,67 @@ export async function GET(req: NextRequest) {
   const start = startQ ?? startISO;
   const end = endQ ?? endISO;
 
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${process.env.CALCOM_API_KEY}`,
+    "cal-api-version": process.env.CALCOM_API_VERSION_SLOTS ?? "2024-08-13",
+  };
+
+  // 1) Preferred: POST /v2/availability/slots
   try {
-    const res = await fetch(
-      `${CAL_BASE}/slots?eventTypeId=${encodeURIComponent(eventTypeId)}&start=${encodeURIComponent(
-        start
-      )}&end=${encodeURIComponent(end)}&timeZone=${encodeURIComponent(timeZone)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.CALCOM_API_KEY}`,
-          "cal-api-version": process.env.CALCOM_API_VERSION_SLOTS ?? "2024-08-13",
-        },
-        cache: "no-store",
-      }
-    );
+    const r = await fetch(`${CAL_BASE}/availability/slots`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        eventTypeId: Number(eventTypeId),
+        start, // ISO
+        end,   // ISO
+        timeZone,
+      }),
+    });
 
-    const txt = await res.text();
+    const txt = await r.text();
     const json = txt ? JSON.parse(txt) : {};
-    if (!res.ok) return NextResponse.json({ error: json, status: res.status }, { status: 502 });
 
-    const rawSlots = Array.isArray(json?.data?.slots)
-      ? json.data.slots
-      : Array.isArray(json?.slots)
-      ? json.slots
-      : [];
+    if (r.ok) {
+      const slots = normalizeSlots(json);
+      return NextResponse.json({ slots, via: "POST /availability/slots" });
+    }
 
-    const slots: string[] = rawSlots
-      .map((s: any) => (typeof s === "string" ? s : s?.start))
-      .filter(Boolean);
+    // If POST not supported in your plan/version, fall through to GET fallback
+  } catch (e) {
+    // swallow and try fallback
+  }
 
-    return NextResponse.json({ slots });
+  // 2) Fallback: GET /v2/event-types/{id}/slots?start=...&end=...&timeZone=...
+  try {
+    const r2 = await fetch(
+      `${CAL_BASE}/event-types/${encodeURIComponent(
+        eventTypeId
+      )}/slots?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&timeZone=${encodeURIComponent(
+        timeZone
+      )}`,
+      { headers, cache: "no-store" }
+    );
+    const txt2 = await r2.text();
+    const json2 = txt2 ? JSON.parse(txt2) : {};
+
+    if (!r2.ok) {
+      return NextResponse.json(
+        { error: json2, status: r2.status, tried: ["POST /availability/slots", "GET /event-types/{id}/slots"] },
+        { status: 502 }
+      );
+    }
+
+    const slots = normalizeSlots(json2);
+    return NextResponse.json({ slots, via: "GET /event-types/{id}/slots" });
   } catch (e: any) {
-    return NextResponse.json({ error: String(e) }, { status: 502 });
+    return NextResponse.json(
+      {
+        error: String(e),
+        tried: ["POST /availability/slots", "GET /event-types/{id}/slots"],
+      },
+      { status: 502 }
+    );
   }
 }
