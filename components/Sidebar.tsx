@@ -9,6 +9,7 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 const links = [
   { href: "/dashboard", label: "Overview" },
   { href: "/appointments", label: "Appointments" },
+  { href: "/calendar", label: "Calendar" },        // ← NEW
   { href: "/services", label: "Services" },
   { href: "/settings", label: "Settings" },
 ];
@@ -23,7 +24,6 @@ export default function Sidebar() {
 
   async function signOut() {
     await supabase.auth.signOut();
-    // Clear lightweight session cookie so middleware blocks protected pages again
     document.cookie = "covex_session=; Max-Age=0; Path=/; SameSite=Lax";
     router.replace("/login");
   }
