@@ -6,7 +6,20 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 type Business = { id: string; name: string | null; industry: string | null; is_mobile: boolean };
 
-const INDUSTRIES = ["chiropractic", "plumbing", "hvac", "dentistry", "other"] as const;
+// Popular to less popular
+const INDUSTRIES = [
+  // Field services & home services (often mobile)
+  "plumbing","hvac","electrician","cleaning","landscaping","pest_control","handyman",
+  "auto_repair","mobile_detailing","car_wash","locksmith","roofing","painting","moving",
+  // Personal services
+  "barbers","hair_salon","nail_salon","spa","massage","personal_training","photography","tutoring",
+  "pet_grooming",
+  // Clinics / in-office
+  "dentistry","chiropractic",
+  // Catch-all
+  "other"
+] as const;
+
 type Industry = typeof INDUSTRIES[number];
 
 export default function SettingsPage() {
@@ -33,8 +46,7 @@ export default function SettingsPage() {
   async function seed() {
     if (!biz) return;
     setBusy(true); setMsg(null);
-    const { error: uErr } = await supabase
-      .from("businesses").update({ industry }).eq("id", biz.id);
+    const { error: uErr } = await supabase.from("businesses").update({ industry }).eq("id", biz.id);
     const { error: sErr } = await supabase.rpc("seed_services_for_business_id", {
       p_business: biz.id,
       p_industry: industry,
@@ -47,31 +59,23 @@ export default function SettingsPage() {
   async function setMobile(on: boolean) {
     if (!biz) return;
     setMsg(null);
-    // optimistic update
-    setBiz(prev => prev ? { ...prev, is_mobile: on } : prev);
+    setBiz(prev => prev ? ({ ...prev, is_mobile: on }) : prev); // optimistic
     const { error } = await supabase.from("businesses").update({ is_mobile: on }).eq("id", biz.id);
-    if (error) {
-      setMsg(error.message);
-      load(); // revert if needed
-    } else {
-      setMsg(on ? "On-site mode: ON (addresses will show)" : "On-site mode: OFF (no addresses)");
-    }
+    if (error) { setMsg(error.message); load(); }
+    else setMsg(on ? "On-site mode: ON (addresses will show)" : "On-site mode: OFF (no addresses)");
   }
 
   return (
     <div className="space-y-6">
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <h2 className="font-semibold mb-2">Business</h2>
-
         {biz ? (
           <div className="text-sm space-y-4">
-            {/* Business ID display (read-only) */}
             <div>
               <div className="text-cx-muted">ID</div>
               <div className="break-all">{biz.id}</div>
             </div>
 
-            {/* Industry + seed */}
             <div className="flex flex-wrap items-center gap-3">
               <label className="text-cx-muted">Industry</label>
               <select
@@ -88,7 +92,6 @@ export default function SettingsPage() {
               </button>
             </div>
 
-            {/* On-site toggle */}
             <div className="flex flex-col gap-2">
               <label className="text-cx-muted">On-site visits</label>
               <div className="flex items-center gap-2">
@@ -106,7 +109,7 @@ export default function SettingsPage() {
                 </button>
               </div>
               <p className="text-xs text-cx-muted">
-                If “We go to the customer” is ON, the app will show address fields in Appointments and Overview. Turn it OFF for in-office businesses like dentistry/chiropractic.
+                If “We go to the customer” is ON, the app will show address fields in Appointments and Overview. Turn it OFF for in-office businesses like dentistry/chiro.
               </p>
             </div>
 
