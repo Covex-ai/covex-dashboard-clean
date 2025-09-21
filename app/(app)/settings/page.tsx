@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
@@ -27,13 +28,13 @@ export default function SettingsPage() {
       .select("id,name,code,active,slot_minutes,event_type_id,sort_order")
       .order("sort_order", { ascending: true, nullsFirst: true })
       .order("name", { ascending: true });
+
     if (!error && data) setRows(data as any);
     setLoading(false);
   }
 
   useEffect(() => {
     load();
-    // realtime refresh in case services change elsewhere
     const ch = supabase
       .channel("rt-services")
       .on("postgres_changes", { event: "*", schema: "public", table: "services" }, () => load())
@@ -49,8 +50,7 @@ export default function SettingsPage() {
     setSavingId(null);
     if (error) {
       setMsg(error.message);
-      // reload to discard local edits on error
-      load();
+      load(); // revert local edits on error
     }
   }
 
@@ -60,18 +60,21 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <button onClick={() => history.back()} className="btn-pill">← Back</button>
+          {/* Back now always goes to Overview (not history.back) */}
+          <Link href="/dashboard" className="btn-pill">← Overview</Link>
           <h1 className="text-lg font-semibold">Settings</h1>
         </div>
       </div>
 
+      {/* Services editor is the default view */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <h2 className="font-semibold mb-3">Services (connect to Cal.com)</h2>
+        <h2 className="font-semibold mb-3">Services (Cal.com mapping)</h2>
         <p className="text-sm text-cx-muted mb-4">
-          For each service, set the <span className="text-white">slot length</span> and the Cal.com{" "}
-          <span className="text-white">Event Type ID</span> (you can copy it from your Cal.com URL; the number in your Retell screenshots).
+          Set <span className="text-white">Active</span>, the visit <span className="text-white">Slot (min)</span>,
+          and the Cal.com <span className="text-white">Event Type ID</span> (the number you see in your Cal.com URL / Retell).
         </p>
 
         <div className="overflow-x-auto">
