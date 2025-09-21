@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 // Protect these app routes
 export const config = {
-  matcher: ["/dashboard/:path*", "/appointments/:path*", "/services/:path*", "/settings/:path*"],
+  matcher: ["/dashboard/:path*", "/appointments/:path*", "/calendar/:path*", "/services/:path*", "/settings/:path*"],
 };
 
 export function middleware(req: NextRequest) {
