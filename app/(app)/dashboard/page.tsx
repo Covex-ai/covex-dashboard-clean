@@ -2,112 +2,53 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-} from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, BarChart, Bar } from "recharts";
 import RangePills from "@/components/RangePills";
-import {
-  fmtUSD,
-  normalizeService,
-  priceFor,
-  serviceLabelFor,
-  toNumber,
-  type NormalizedService,
-} from "@/lib/pricing";
+
+// Utilities
+function fmtUSD(n: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
+}
+function toNumber(x: unknown, fallback = 0): number {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 type Range = "7d" | "30d" | "90d";
 
 type ApptRow = {
   id: number;
-  business_uuid: string;
-  start_ts: string | null; // may be null in some sources
+  start_ts: string;
   end_ts: string | null;
-  created_at?: string | null;
-  // name/phone may come in as caller_* from upstream
-  name: string | null;
-  phone: string | null;
-  caller_name?: string | null;
-  caller_phone_e164?: string | null;
-
-  status: string | null; // raw -> we'll normalize
+  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | string | null;
   service_raw: string | null;
-  normalized_service: NormalizedService | null;
+  normalized_service: string | null;
   price_usd: number | string | null;
-  updated_at: string | null;
+  caller_name: string | null;
+  caller_phone_e164: string | null;
+  service_id: number | null;
+  address_text?: string | null;
 };
 
-// ---------- status helpers (same look as Appointments page) ----------
-type Status = "Booked" | "Rescheduled" | "Cancelled" | "Completed";
-
-function normalizeStatus(s: string | null | undefined): Status | null {
-  if (!s) return null;
-  const t = s.trim().toLowerCase();
-  if (t === "booked") return "Booked";
-  if (t === "rescheduled") return "Rescheduled";
-  if (t === "cancelled") return "Cancelled";
-  if (t === "completed") return "Completed";
-  return null;
-}
-
-function getWhen(row: ApptRow): Date | null {
-  const a = row.start_ts ? new Date(row.start_ts) : null;
-  const b = row.end_ts ? new Date(row.end_ts) : null;
-  const c = row.created_at ? new Date(row.created_at) : null;
-  return a ?? b ?? c ?? null;
-}
-
-function isCompleted(row: ApptRow): boolean {
-  const st = normalizeStatus(row.status);
-  if (st === "Cancelled") return false;
-  if (st === "Completed") return true;
-  const when = getWhen(row);
-  if (!when) return false;
-  return when.getTime() < Date.now();
-}
-
-function StatusBadge({ value }: { value: Status | null }) {
-  const base =
-    "inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-medium border";
-  if (value === "Booked")
-    return (
-      <span className={`${base} border-emerald-700/40 bg-emerald-500/15 text-emerald-300`}>
-        Booked
-      </span>
-    );
-  if (value === "Rescheduled")
-    return (
-      <span className={`${base} border-amber-700/40 bg-amber-500/15 text-amber-300`}>
-        Rescheduled
-      </span>
-    );
-  if (value === "Cancelled")
-    return (
-      <span className={`${base} border-rose-700/40 bg-rose-500/15 text-rose-300`}>
-        Cancelled
-      </span>
-    );
-  if (value === "Completed")
-    return (
-      <span className={`${base} border-white/20 bg-white/10 text-cx-muted`}>
-        Completed
-      </span>
-    );
-  return <span className={`${base} border-cx-border text-cx-muted`}>-</span>;
-}
-// --------------------------------------------------------------------
+type ServiceRow = {
+  id: number;
+  name: string;
+  code: string;
+  default_price_usd: number | string;
+};
 
 export default function DashboardPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [range, setRange] = useState<Range>("7d"); // <-- default now 7d
+  const [range, setRange] = useState<Range>("7d"); // DEFAULT 7d
   const [rows, setRows] = useState<ApptRow[]>([]);
+  const [services, setServices] = useState<ServiceRow[]>([]);
+
+  // Map for fast lookups
+  const svcById = useMemo(() => {
+    const m = new Map<number, ServiceRow>();
+    services.forEach(s => m.set(s.id, s));
+    return m;
+  }, [services]);
 
   function daysFor(r: Range) {
     return r === "7d" ? 7 : r === "30d" ? 30 : 90;
@@ -117,49 +58,64 @@ export default function DashboardPage() {
     const days = daysFor(range);
     const from = new Date();
     from.setDate(from.getDate() - days);
-    const { data, error } = await supabase
-      .from("appointments")
-      .select("*")
-      .gte("start_ts", from.toISOString())
-      .order("start_ts", { ascending: true });
-    if (!error && data) setRows(data as any);
+
+    const [{ data: appts }, { data: svcs }] = await Promise.all([
+      supabase
+        .from("appointments")
+        .select("id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text")
+        .gte("start_ts", from.toISOString())
+        .order("start_ts", { ascending: true }),
+      supabase
+        .from("services")
+        .select("id,name,code,default_price_usd")
+        .order("active", { ascending: false })
+        .order("sort_order", { ascending: true, nullsFirst: false })
+        .order("name", { ascending: true }),
+    ]);
+
+    setRows((appts as any) ?? []);
+    setServices((svcs as any) ?? []);
   }
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range]);
+  useEffect(() => { load(); }, [range]);
 
   // realtime subscription
   useEffect(() => {
     const ch = supabase
       .channel("rt-appointments")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "appointments" },
-        () => load()
-      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => load())
       .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { supabase.removeChannel(ch); };
   }, []);
 
-  // Totals (exclude Cancelled from revenue)
+  // Revenue helper: prefer service_id -> default_price_usd; fallback to price_usd
+  function priceFor(row: ApptRow): number {
+    if (row.status === "Cancelled") return 0; // excluded from revenue
+    if (row.service_id != null) {
+      const svc = svcById.get(row.service_id);
+      if (svc) return toNumber(svc.default_price_usd, 0);
+    }
+    return toNumber(row.price_usd, 0);
+  }
+
+  // Name/phone helpers (your actual schema)
+  function personName(r: ApptRow) {
+    return r.caller_name ?? "—";
+  }
+  function personPhone(r: ApptRow) {
+    return r.caller_phone_e164 ?? "—";
+  }
+
+  // Totals
   const totals = useMemo(() => {
-    const relevant = rows.filter((r) => normalizeStatus(r.status) !== "Cancelled");
-    const revenue = relevant.reduce((sum, r) => {
-      const ns = r.normalized_service ?? normalizeService(r.service_raw);
-      return sum + priceFor(ns, toNumber(r.price_usd));
-    }, 0);
+    const revenue = rows.reduce((sum, r) => sum + priceFor(r), 0);
     return {
       bookings: rows.length,
       revenue,
-      rescheduled: rows.filter((r) => normalizeStatus(r.status) === "Rescheduled").length,
-      cancelled: rows.filter((r) => normalizeStatus(r.status) === "Cancelled").length,
+      rescheduled: rows.filter(r => (r.status || "").toLowerCase() === "rescheduled").length,
+      cancelled: rows.filter(r => (r.status || "").toLowerCase() === "cancelled").length,
     };
-  }, [rows]);
+  }, [rows, svcById]);
 
   // Bookings per day series
   const bookingsSeries = useMemo(() => {
@@ -172,32 +128,40 @@ export default function DashboardPage() {
       map.set(key, 0);
     }
     for (const r of rows) {
-      const when = getWhen(r);
-      if (!when) continue;
-      const key = when.toISOString().slice(5, 10);
+      const d = new Date(r.start_ts);
+      const key = d.toISOString().slice(5, 10);
       if (map.has(key)) map.set(key, (map.get(key) ?? 0) + 1);
     }
     return Array.from(map.entries()).map(([date, count]) => ({ date, count }));
   }, [rows, range]);
 
-  // Revenue by service series (exclude Cancelled)
+  // Revenue by service (prefer service_id->name, else fallback to normalized/service_raw)
   const revenueByService = useMemo(() => {
-    const sums = new Map<NormalizedService | "OTHER", number>();
-    const add = (k: NormalizedService | "OTHER", v: number) =>
-      sums.set(k, (sums.get(k) ?? 0) + v);
-
+    const sums = new Map<string, number>(); // key = label
     for (const r of rows) {
-      if (normalizeStatus(r.status) === "Cancelled") continue;
-      const s = r.normalized_service ?? normalizeService(r.service_raw) ?? "OTHER";
-      const v = priceFor(s === "OTHER" ? null : s, toNumber(r.price_usd));
-      add(s, v);
+      if ((r.status || "").toLowerCase() === "cancelled") continue;
+      let label: string;
+      if (r.service_id != null) {
+        const svc = svcById.get(r.service_id);
+        label = svc?.name || "Other";
+      } else {
+        label = r.normalized_service || r.service_raw || "Other";
+      }
+      sums.set(label, (sums.get(label) ?? 0) + priceFor(r));
     }
-    return Array.from(sums.entries()).map(([s, v]) => ({
-      service:
-        s === "OTHER" ? "Other" : serviceLabelFor(s as NormalizedService, null),
-      revenue: v,
-    }));
-  }, [rows]);
+    return Array.from(sums.entries()).map(([service, revenue]) => ({ service, revenue }));
+  }, [rows, svcById]);
+
+  // Status chip
+  function StatusPill({ s }: { s: string | null }) {
+    const v = (s ?? "").toLowerCase();
+    const base = "px-2 py-1 rounded-lg text-xs font-medium border border-cx-border";
+    if (v === "booked") return <span className={`${base} text-emerald-400`}>Booked</span>;
+    if (v === "rescheduled") return <span className={`${base} text-amber-300`}>Rescheduled</span>;
+    if (v === "cancelled") return <span className={`${base} text-rose-400`}>Cancelled</span>;
+    if (v === "completed") return <span className={`${base} text-zinc-300`}>Completed</span>;
+    return <span className={`${base} text-cx-muted`}>{s ?? "-"}</span>;
+  }
 
   return (
     <div className="space-y-6">
@@ -223,12 +187,7 @@ export default function DashboardPage() {
                 <XAxis dataKey="date" tickMargin={8} />
                 <YAxis allowDecimals={false} width={24} />
                 <Tooltip formatter={(v: any) => [`Bookings: ${v}`, ""]} />
-                <Line
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#ffffff"
-                  dot={{ r: 3, fill: "#ffffff" }}
-                />
+                <Line type="monotone" dataKey="count" stroke="#ffffff" dot={{ r: 3, fill: "#ffffff" }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -253,9 +212,12 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Recent table with status badges + name/phone fallback */}
+      {/* Recent table (now uses caller_* fields + status chips) */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <h3 className="font-semibold mb-3">Recent appointments</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold">Recent appointments</h3>
+        </div>
+
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="text-cx-muted">
@@ -271,27 +233,26 @@ export default function DashboardPage() {
             </thead>
             <tbody>
               {rows.slice(-10).map((r) => {
-                const ns = r.normalized_service ?? normalizeService(r.service_raw);
-                const st = normalizeStatus(r.status) ?? (isCompleted(r) ? "Completed" : null);
-                const when = getWhen(r);
-                const name = r.name ?? r.caller_name ?? "—";
-                const phone = r.phone ?? r.caller_phone_e164 ?? "—";
+                const d = new Date(r.start_ts);
+                const date = d.toLocaleDateString();
+                const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+                // Prefer service name via service_id
+                let svcLabel = r.service_raw || r.normalized_service || "Service";
+                if (r.service_id != null) {
+                  const svc = svcById.get(r.service_id);
+                  if (svc?.name) svcLabel = svc.name;
+                }
 
                 return (
-                  <tr key={r.id} className="border-top border-cx-border">
-                    <td className="py-2 pr-4">{when ? when.toLocaleDateString() : "—"}</td>
-                    <td className="py-2 pr-4">
-                      {when ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—"}
-                    </td>
-                    <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
-                    <td className="py-2 pr-4">{name}</td>
-                    <td className="py-2 pr-4">{phone}</td>
-                    <td className="py-2 pr-4">
-                      <StatusBadge value={st} />
-                    </td>
-                    <td className="py-2 pr-4">
-                      {fmtUSD(priceFor(ns, toNumber(r.price_usd)))}
-                    </td>
+                  <tr key={r.id} className="border-t border-cx-border">
+                    <td className="py-2 pr-4">{date}</td>
+                    <td className="py-2 pr-4">{time}</td>
+                    <td className="py-2 pr-4">{svcLabel}</td>
+                    <td className="py-2 pr-4">{personName(r)}</td>
+                    <td className="py-2 pr-4">{personPhone(r)}</td>
+                    <td className="py-2 pr-4"><StatusPill s={r.status} /></td>
+                    <td className="py-2 pr-4">{fmtUSD(priceFor(r))}</td>
                   </tr>
                 );
               })}
