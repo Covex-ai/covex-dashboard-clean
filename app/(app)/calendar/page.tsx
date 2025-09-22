@@ -1,211 +1,230 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import Image from "next/image";
+import { useMemo, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
-type Row = {
-  id: number;
-  business_id: string;
-  start_ts: string;          // UTC in DB
-  end_ts: string | null;
-  caller_name: string | null;
-  caller_phone_e164: string | null;
-  service_raw: string | null;
-  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | null;
-};
+const LOGO_SRC = "/brand-logo.png";
+// ↑ 2x bigger logo
+const LOGO_HEIGHT_PX = 192;
+const CARD_PADDING = "p-6 md:p-8";
 
-function startOfMonthLocal(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-function endOfMonthLocal(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
-}
-// Sunday-first month grid: 6 rows x 7 cols (42 cells)
-function buildMonthGrid(view: Date) {
-  const first = startOfMonthLocal(view);
-  const start = new Date(first);
-  // first.getDay(): 0=Sun..6=Sat ; go back to previous Sunday
-  start.setDate(first.getDate() - first.getDay());
-  const days: Date[] = [];
-  for (let i = 0; i < 42; i++) {
-    const d = new Date(start);
-    d.setDate(start.getDate() + i);
-    days.push(d);
-  }
-  return days;
-}
+type Mode = "signin" | "signup";
 
-// Bounds for the *local* calendar day; send as UTC ISO to DB
-function dayBoundsISO(d: Date) {
-  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
-  const end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0);
-  return { startISO: start.toISOString(), endISO: end.toISOString() };
-}
-
-export default function CalendarPage() {
+export default function LoginPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [view, setView] = useState<Date>(() => {
-    const t = new Date();
-    return new Date(t.getFullYear(), t.getMonth(), 1); // ensure month is local-safe
-  });
-  const [selected, setSelected] = useState<Date>(() => {
-    const t = new Date();
-    return new Date(t.getFullYear(), t.getMonth(), t.getDate());
-  });
-  const [rows, setRows] = useState<Row[]>([]);
+  const router = useRouter();
+
+  const [mode, setMode] = useState<Mode>("signin");
+  const [identifier, setIdentifier] = useState(""); // email OR username (sign-in)
+  const [email, setEmail] = useState("");           // email (sign-up)
+  const [username, setUsername] = useState("");     // username (sign-up)
+  const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [logoOk, setLogoOk] = useState(true);
+  const [redirectTo, setRedirectTo] = useState("/dashboard");
 
-  const grid = useMemo(() => buildMonthGrid(view), [view]);
-  const monthLabel = view.toLocaleString(undefined, { month: "long", year: "numeric" });
-
-  async function loadDay(d: Date) {
-    setBusy(true);
-    const { startISO, endISO } = dayBoundsISO(d);
-    const { data, error } = await supabase
-      .from("appointments")
-      .select("*")
-      .gte("start_ts", startISO)
-      .lt("start_ts", endISO)
-      .order("start_ts", { ascending: true });
-    if (!error && data) setRows(data as any);
-    setBusy(false);
-  }
-
-  useEffect(() => { loadDay(selected); }, [selected]); // load when date changes
-
-  // Realtime: refresh the selected day when any appointment changes
   useEffect(() => {
-    const ch = supabase
-      .channel("rt-cal")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => {
-        loadDay(selected);
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [selected, supabase]);
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const r = sp.get("redirect");
+      if (r) setRedirectTo(r);
+    } catch {}
+  }, []);
 
-  function isSameDay(a: Date, b: Date) {
-    return a.getFullYear() === b.getFullYear() &&
-           a.getMonth() === b.getMonth() &&
-           a.getDate() === b.getDate();
-  }
-  function isSameMonth(a: Date, b: Date) {
-    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+  function setGateCookie() {
+    document.cookie = "covex_session=1; Max-Age=2592000; Path=/; SameSite=Lax";
   }
 
-  function goPrevMonth() {
-    const next = new Date(view.getFullYear(), view.getMonth() - 1, 1);
-    setView(next);
-    // if selected is outside new month grid, keep the same day number if possible
-    setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28)));
-  }
-  function goNextMonth() {
-    const next = new Date(view.getFullYear(), view.getMonth() + 1, 1);
-    setView(next);
-    setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28)));
-  }
-  function goToday() {
-    const t = new Date();
-    const m1 = new Date(t.getFullYear(), t.getMonth(), 1);
-    setView(m1);
-    setSelected(new Date(t.getFullYear(), t.getMonth(), t.getDate()));
+  async function resolveEmailForSignIn(id: string): Promise<string> {
+    const trimmed = id.trim();
+    if (!trimmed) return trimmed;
+    if (trimmed.includes("@")) return trimmed; // already an email
+    const { data } = await supabase.rpc("lookup_email_for_username", { u: trimmed });
+    return data || trimmed;
   }
 
-  // Status badge class
-  function statusBadge(s: Row["status"]) {
-    if (s === "Cancelled") return "badge badge--cancelled";
-    if (s === "Rescheduled") return "badge badge--rescheduled";
-    if (s === "Completed") return "badge badge--completed";
-    return "badge badge--booked";
+  async function signIn() {
+    setBusy(true);
+    setMsg(null);
+    const loginEmail = await resolveEmailForSignIn(identifier);
+    const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: pw });
+    setBusy(false);
+    if (error) return setMsg(error.message);
+    setGateCookie();
+    router.replace(redirectTo);
+  }
+
+  async function signUp() {
+    setBusy(true);
+    setMsg(null);
+
+    if (!email.trim() || !pw.trim() || !username.trim()) {
+      setBusy(false);
+      return setMsg("Email, username, and password are required.");
+    }
+    if (username.trim().length < 3) {
+      setBusy(false);
+      return setMsg("Username must be at least 3 characters.");
+    }
+
+    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", {
+      u: username.trim(),
+    });
+    if (availErr) {
+      setBusy(false);
+      return setMsg("Could not verify username availability. Try again.");
+    }
+    if (!ok) {
+      setBusy(false);
+      return setMsg("That username is taken. Please choose another.");
+    }
+
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password: pw,
+      options: { data: { username: username.trim() } },
+    });
+    if (error) {
+      setBusy(false);
+      return setMsg(error.message);
+    }
+
+    try {
+      const uid = data.user?.id;
+      if (uid) {
+        await supabase.from("profiles").update({ username: username.trim(), email }).eq("id", uid);
+      }
+    } catch {}
+
+    setBusy(false);
+
+    if (data.session) {
+      setGateCookie();
+      router.replace("/dashboard");
+    } else {
+      setMsg("Check your email to confirm your account, then sign in.");
+      setMode("signin");
+      setIdentifier(email);
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (busy) return;
+    if (mode === "signin") await signIn();
+    else await signUp();
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{monthLabel}</h1>
-        <div className="flex gap-2">
-          <button className="btn-pill" onClick={goPrevMonth}>← Prev</button>
-          <button className="btn-pill btn-pill--active" onClick={goToday}>Today</button>
-          <button className="btn-pill" onClick={goNextMonth}>Next →</button>
+    <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
+      <div className={`w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
+        {/* Logo (2x size) */}
+        <div className="flex justify-center mb-6">
+          {logoOk ? (
+            <Image
+              src={LOGO_SRC}
+              alt="COVEX"
+              width={2000}
+              height={500}
+              priority
+              draggable={false}
+              onError={() => setLogoOk(false)}
+              className="opacity-95 object-contain"
+              style={{ height: LOGO_HEIGHT_PX, width: "auto" }}
+            />
+          ) : (
+            <span className="text-3xl font-semibold tracking-[0.35em] text-white">COVEX</span>
+          )}
         </div>
-      </div>
 
-      {/* Month grid */}
-      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <div className="grid grid-cols-7 gap-2 text-center text-sm text-cx-muted mb-2">
-          <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
-        </div>
+        {/* Hidden heading (removes visible 'Sign in' text) */}
+        <h1 className="sr-only">
+          {mode === "signin" ? "Sign in" : "Create your account"}
+        </h1>
 
-        <div className="grid grid-cols-7 gap-2">
-          {grid.map((d, i) => {
-            const inMonth = isSameMonth(d, view);
-            const sel = isSameDay(d, selected);
-            return (
+        {/* FORM */}
+        <form onSubmit={handleSubmit}>
+          {mode === "signin" ? (
+            <>
+              <label className="block text-sm text-cx-muted mb-1">Email or username</label>
+              <input
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                placeholder="email@company.com or your-company"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </>
+          ) : (
+            <>
+              <label className="block text-sm text-cx-muted mb-1">Company username</label>
+              <input
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                placeholder="your-company"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                required
+              />
+
+              <label className="block text-sm text-cx-muted mb-1">Email</label>
+              <input
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                required
+              />
+            </>
+          )}
+
+          <label className="block text-sm text-cx-muted mb-1">Password</label>
+          <input
+            className="w-full mb-4 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+            type="password"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            autoComplete={mode === "signin" ? "current-password" : "new-password"}
+            required
+          />
+
+          {msg && <div className="text-sm text-rose-400 mb-3">{msg}</div>}
+
+          <button
+            type="submit"
+            disabled={busy}
+            className="btn-pill btn-pill--active w-full justify-center"
+          >
+            {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
+          </button>
+
+          <div className="text-center mt-4">
+            {mode === "signin" ? (
               <button
-                key={i}
-                onClick={() => setSelected(new Date(d.getFullYear(), d.getMonth(), d.getDate()))}
-                className={`rounded-xl h-12 border border-cx-border transition ${
-                  sel ? "bg-white/10 text-white" : "bg-cx-bg text-cx-muted hover:text-white hover:bg-white/5"
-                } ${inMonth ? "" : "opacity-40"}`}
-                title={d.toLocaleDateString()}
+                type="button"
+                className="text-cx-muted hover:text-white underline underline-offset-4"
+                onClick={() => { setMsg(null); setMode("signup"); }}
               >
-                {d.getDate()}
+                Need an account? Sign up
               </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Day list */}
-      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="font-semibold">
-            {selected.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "short", day: "numeric" })}
+            ) : (
+              <button
+                type="button"
+                className="text-cx-muted hover:text-white underline underline-offset-4"
+                onClick={() => { setMsg(null); setMode("signin"); }}
+              >
+                Have an account? Sign in
+              </button>
+            )}
           </div>
-          <div className="text-xs flex items-center gap-3 text-cx-muted">
-            <span><span className="inline-block w-2 h-2 rounded-full bg-green-400 mr-1"></span>Booked</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-amber-400 mr-1"></span>Rescheduled</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-red-400 mr-1"></span>Cancelled</span>
-            <span><span className="inline-block w-2 h-2 rounded-full bg-slate-300 mr-1"></span>Completed</span>
-          </div>
-        </div>
+        </form>
 
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="text-cx-muted">
-              <tr className="text-left">
-                <th className="py-2 pr-4">Time</th>
-                <th className="py-2 pr-4">Name</th>
-                <th className="py-2 pr-4">Phone</th>
-                <th className="py-2 pr-4">Service</th>
-                <th className="py-2 pr-4">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => {
-                const t = new Date(r.start_ts); // shown in local time
-                return (
-                  <tr key={r.id} className="border-t border-cx-border">
-                    <td className="py-2 pr-4">
-                      {t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
-                    </td>
-                    <td className="py-2 pr-4">{r.caller_name ?? "-"}</td>
-                    <td className="py-2 pr-4">{r.caller_phone_e164 ?? "-"}</td>
-                    <td className="py-2 pr-4">{r.service_raw ?? "-"}</td>
-                    <td className="py-2 pr-4"><span className={statusBadge(r.status)}>{r.status ?? "Booked"}</span></td>
-                  </tr>
-                );
-              })}
-              {rows.length === 0 && (
-                <tr>
-                  <td className="py-6 text-center text-cx-muted" colSpan={5}>
-                    {busy ? "Loading…" : "No appointments for this day."}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <p className="text-xs text-cx-muted mt-4 text-center">Accounts are secured by Supabase Auth.</p>
       </div>
     </div>
   );
