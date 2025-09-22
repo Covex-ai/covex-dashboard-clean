@@ -3,314 +3,368 @@
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
-// ---- Types you likely already have in DB ----
-type Service = {
+type ServiceRow = {
   id: number;
-  business_id?: string | null;
+  business_id: string;
+  code: string; // required & unique per business
   name: string;
-  active?: boolean | null;
-  default_price_cents?: number | null;
-  event_type_id?: number | null;  // Cal.com Event Type ID
-  duration_min?: number | null;   // optional: length to request
-  sort_order?: number | null;
+  event_type_id: number | null;
+  duration_min: number | null;
+  default_price_cents: number | null;
+  active: boolean;
 };
 
-type Slot = string; // ISO UTC, e.g. "2025-09-22T14:00:00Z"
+type Slot = { start: string }; // ISO
 
-// Build month grid
-function startOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
-function endOfMonth(d: Date) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
-function addMonths(d: Date, n: number) { return new Date(d.getFullYear(), d.getMonth() + n, 1); }
-function ymd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
+function tz() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
+  } catch {
+    return "America/New_York";
+  }
+}
+
+function normalizeE164(input: string): string {
+  // Keep digits only
+  const digits = (input || "").replace(/\D/g, "");
+  // if it already includes country 1 and is 11 digits -> +1XXXXXXXXXX
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  // if 10 digits -> assume US
+  if (digits.length === 10) return `+1${digits}`;
+  // if user typed + and other chars, coerce to +digits
+  if (input.trim().startsWith("+")) return `+${digits}`;
+  // fallback: empty or not enough digits -> return "+1"
+  return digits ? `+${digits}` : "+1";
 }
 
 export default function NewAppointmentPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [businessId, setBusinessId] = useState<string | null>(null);
+  const [services, setServices] = useState<ServiceRow[]>([]);
+  const [serviceId, setServiceId] = useState<number | null>(null);
 
-  const [services, setServices] = useState<Service[]>([]);
-  const [svcId, setSvcId] = useState<number | "">("");
-
-  const [monthCursor, setMonthCursor] = useState<Date>(() => startOfMonth(new Date()));
-  const [date, setDate] = useState<string>(() => ymd(new Date()));
-  const [tz] = useState<string>(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York");
-
+  const [date, setDate] = useState<Date>(() => new Date());
   const [slots, setSlots] = useState<Slot[]>([]);
-  const [sel, setSel] = useState<Slot | null>(null);
+  const [selectedISO, setSelectedISO] = useState<string | null>(null);
 
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
+  const [name, setName] = useState<string>("");
+  const [email, setEmail] = useState<string>("");
+  const [phone, setPhone] = useState<string>("+1"); // default +1
 
-  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const svc = services.find(s => s.id === svcId) || null;
+  const currentService = services.find((s) => s.id === serviceId) || null;
 
-  // 1) Load current tenant (business) id
   useEffect(() => {
     (async () => {
-      const { data, error } = await supabase.from("profiles").select("business_id").single();
-      if (!error && data?.business_id) setBusinessId(data.business_id);
-    })();
-  }, [supabase]);
-
-  // 2) Load services for that business
-  useEffect(() => {
-    if (!businessId) return;
-    (async () => {
-      setMsg(null);
+      // Load active services for this business visible by RLS
       const { data, error } = await supabase
         .from("services")
-        .select("id,business_id,name,active,default_price_cents,event_type_id,duration_min,sort_order")
-        .eq("business_id", businessId)
-        .order("sort_order", { ascending: true });
-      if (error) {
-        setMsg("Could not load services.");
-        setServices([]);
-        setSvcId("");
-        return;
+        .select("*")
+        .eq("active", true)
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true });
+      if (!error && data) {
+        setServices(data as any);
+        if (data.length && !serviceId) {
+          setServiceId((data[0] as any).id);
+        }
       }
-      const rows = (data ?? []).filter(r => r.active !== false);
-      setServices(rows as Service[]);
-      setSvcId(rows.length ? rows[0].id : "");
     })();
-  }, [businessId, supabase]);
+  }, []);
 
-  // 3) When service/date changes, load slots from our API
+  // Fetch slots whenever service/date changes
   useEffect(() => {
-    if (!svc) { setSlots([]); setSel(null); return; }
-    if (!svc.event_type_id) { setMsg("This service is missing its Cal Event Type ID (Settings → Services)."); setSlots([]); setSel(null); return; }
+    setSlots([]);
+    setSelectedISO(null);
+    setErr(null);
+
+    if (!currentService?.event_type_id) return;
 
     (async () => {
-      setMsg(null);
-      setSlots([]);
-      setSel(null);
+      try {
+        const y = date.getFullYear();
+        const m = date.getMonth() + 1;
+        const d = date.getDate();
+        const dayStr = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
-      const qs = new URLSearchParams({
-        eventTypeId: String(svc.event_type_id),
-        date,
-        timeZone: tz,
-      });
-      if (svc.duration_min) qs.set("duration", String(svc.duration_min));
+        const usp = new URLSearchParams({
+          eventTypeId: String(currentService.event_type_id),
+          date: dayStr,
+          timeZone: tz(),
+        });
+        const res = await fetch(`/api/cal/availability?${usp.toString()}`);
+        const json = await res.json();
+        if (!res.ok) throw new Error(json?.error || "Availability failed");
 
-      const r = await fetch(`/api/cal/availability?${qs.toString()}`, { cache: "no-store" });
-      const json = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        setMsg(json?.body?.error?.message || json?.error || "Failed to load availability.");
-        return;
+        setSlots((json?.slots ?? []) as Slot[]);
+      } catch (e: any) {
+        setErr(e?.message ?? "Failed to load availability.");
       }
-      setSlots(json?.slots ?? []);
-      if ((json?.slots ?? []).length === 0) setMsg("No available times on this day.");
     })();
-  }, [svcId, date, tz]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serviceId, date]);
 
-  // Month grid days
-  const daysInMonth = (() => {
-    const first = startOfMonth(monthCursor);
-    const last = endOfMonth(monthCursor);
-    const result: string[] = [];
-
-    // pad to Monday-start grid (change to Sunday if you prefer)
-    const pad = (first.getDay() + 6) % 7; // 0..6, Monday=0
-    for (let i = 0; i < pad; i++) result.push("");
-
-    for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
-      result.push(ymd(d));
+  async function createAppt() {
+    setErr(null);
+    if (!currentService?.event_type_id) {
+      setErr("This service is missing its Cal Event Type ID.");
+      return;
     }
-    return result;
-  })();
+    if (!selectedISO) {
+      setErr("Please select a time.");
+      return;
+    }
+    const phoneE164 = normalizeE164(phone);
+    const payload = {
+      eventTypeId: currentService.event_type_id,
+      startISO: selectedISO,
+      name: name.trim(),
+      email: email.trim(),
+      timeZone: tz(),
+      phone: phoneE164,
+    };
 
-  function nextMonth(n: number) {
-    const nm = addMonths(monthCursor, n);
-    setMonthCursor(startOfMonth(nm));
-  }
+    if (!payload.name || !payload.email) {
+      setErr("Name and email are required.");
+      return;
+    }
 
-  function onDayClick(ymdStr: string) {
-    if (!ymdStr) return;
-    setDate(ymdStr);
-  }
-
-  function localLabelFromUTC(isoUTC: string) {
-    const d = new Date(isoUTC);
-    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  }
-
-  async function createAppointment() {
+    setBusy(true);
     try {
-      setBusy(true);
-      setMsg(null);
-      if (!svc) throw new Error("Pick a service.");
-      if (!svc.event_type_id) throw new Error("This service is missing its Cal Event Type ID.");
-      if (!sel) throw new Error("Pick a time.");
-      if (!name) throw new Error("Enter the client name.");
-      if (!email) throw new Error("Enter an email (required by Cal.com).");
-
-      // 1) Book in Cal.com
-      const res = await fetch("/api/cal/book", {
+      const r = await fetch("/api/cal/book", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          eventTypeId: svc.event_type_id,
-          start: sel,               // UTC time from /slots
-          timeZone: tz,
-          name,
-          email,
-          phoneNumber: phone || undefined,
-          lengthInMinutes: svc.duration_min ?? undefined,
-          metadata: { source: "Covex Dashboard" },
-        }),
+        body: JSON.stringify(payload),
       });
-      const booked = await res.json();
-      if (!res.ok) {
-        throw new Error(booked?.body?.error?.message || booked?.error || "Cal.com booking failed.");
+      const j = await r.json();
+      if (!r.ok) {
+        throw new Error(
+          j?.error?.message ||
+            j?.error ||
+            j?.message ||
+            "Booking failed. Please try another time."
+        );
       }
 
-      const cal = booked?.data ?? {};
-      const bookingUid: string | undefined = cal.uid;
-      const startUTC: string | undefined = cal.start;
-      const endUTC: string | undefined = cal.end;
+      // Optional: also insert a row into appointments for your dashboard.
+      // We’ll store core bits your schema uses.
+      const { data: me } = await supabase
+        .from("profiles")
+        .select("business_id")
+        .limit(1)
+        .single();
 
-      // 2) Insert into appointments
-      const price_usd = (svc.default_price_cents ?? 0) > 0
-        ? Math.round((svc.default_price_cents ?? 0) / 100)
-        : null;
+      if (me?.business_id) {
+        await supabase.from("appointments").insert({
+          business_id: me.business_id,
+          booking_id: j?.data?.id ?? null, // Cal booking id if present
+          status: "Booked",
+          source: "Dashboard",
+          caller_name: payload.name,
+          caller_phone_e164: payload.phone,
+          service_raw: currentService.name,
+          normalized_service: currentService.code,
+          start_ts: selectedISO,
+          end_ts: null,
+          price_usd:
+            currentService.default_price_cents != null
+              ? Math.round(currentService.default_price_cents / 100)
+              : null,
+          created_at: new Date().toISOString(),
+        });
+      }
 
-      const { data: prof, error: profErr } = await supabase.from("profiles").select("business_id").single();
-      if (profErr || !prof?.business_id) throw new Error("Could not resolve your business id.");
-
-      const { error: insErr } = await supabase.from("appointments").insert({
-        business_id: prof.business_id,
-        booking_id: bookingUid ?? null,
-        status: "Booked",
-        source: "Manual",
-        caller_name: name,
-        caller_phone_e164: phone || null,
-        service_raw: svc.name,
-        normalized_service: null,
-        start_ts: startUTC ?? sel,
-        end_ts: endUTC ?? sel, // Cal returns end; if not, you can add duration math
-        price_usd: price_usd,
-      });
-
-      if (insErr) throw insErr;
-      setMsg("Booked and saved ✔");
-      // window.location.href = "/appointments"; // optional redirect
+      alert("Appointment created ✅");
+      // Reset
+      setSelectedISO(null);
     } catch (e: any) {
-      setMsg(String(e?.message ?? e));
+      setErr(String(e?.message ?? e));
     } finally {
       setBusy(false);
     }
   }
 
+  // Build date grid (simple 6 rows)
+  const days: Date[] = useMemo(() => {
+    const first = new Date(date.getFullYear(), date.getMonth(), 1);
+    const start = new Date(first);
+    start.setDate(1 - ((first.getDay() + 6) % 7)); // Monday grid
+    const list: Date[] = [];
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      list.push(d);
+    }
+    return list;
+  }, [date]);
+
+  const isSameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold">New Appointment</h2>
+      <h1 className="text-2xl font-semibold">New Appointment</h1>
 
-      {/* Service picker */}
+      {/* Service */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <label className="block text-sm text-cx-muted mb-2">Service</label>
+        <div className="text-sm text-cx-muted mb-2">Service</div>
         <select
+          value={serviceId ?? ""}
+          onChange={(e) => setServiceId(Number(e.target.value))}
           className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
-          value={svcId}
-          onChange={(e) => setSvcId(e.target.value ? Number(e.target.value) : "")}
         >
           {services.length === 0 && <option value="">No services found</option>}
           {services.map((s) => (
             <option key={s.id} value={s.id}>
-              {s.name}{s.duration_min ? ` • ${s.duration_min}m` : ""}
+              {s.name} {s.duration_min ? `• ${s.duration_min}m` : ""}
             </option>
           ))}
         </select>
       </div>
 
-      {/* Calendar + slots */}
+      {/* Date/Times */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <div className="flex items-start gap-6">
-          {/* Month grid */}
-          <div className="flex-1">
+        <div className="grid grid-cols-1 md:grid-cols-[1fr,320px] gap-6">
+          {/* Calendar */}
+          <div>
             <div className="flex items-center justify-between mb-3">
-              <button className="btn-pill" onClick={() => nextMonth(-1)}>←</button>
-              <div className="font-medium">
-                {monthCursor.toLocaleString(undefined, { month: "long", year: "numeric" })}
+              <button
+                className="btn-pill"
+                onClick={() => {
+                  const d = new Date(date);
+                  d.setMonth(d.getMonth() - 1);
+                  setDate(d);
+                }}
+              >
+                ←
+              </button>
+              <div className="font-semibold">
+                {date.toLocaleString(undefined, {
+                  month: "long",
+                  year: "numeric",
+                })}
               </div>
-              <button className="btn-pill" onClick={() => nextMonth(1)}>→</button>
+              <button
+                className="btn-pill"
+                onClick={() => {
+                  const d = new Date(date);
+                  d.setMonth(d.getMonth() + 1);
+                  setDate(d);
+                }}
+              >
+                →
+              </button>
+            </div>
+
+            <div className="grid grid-cols-7 gap-2 text-center text-sm text-cx-muted mb-2">
+              <div>Mon</div><div>Tue</div><div>Wed</div>
+              <div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
             </div>
 
             <div className="grid grid-cols-7 gap-2">
-              {["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d => (
-                <div key={d} className="text-xs text-cx-muted">{d}</div>
-              ))}
-              {daysInMonth.map((d, i) => {
-                if (!d) return <div key={`pad-${i}`} />;
-                const selected = d === date;
+              {days.map((d, i) => {
+                const inMonth = d.getMonth() === date.getMonth();
+                const selected = isSameDay(d, date);
                 return (
                   <button
-                    key={d}
-                    onClick={() => onDayClick(d)}
-                    className={`h-10 rounded-xl border border-cx-border text-sm
-                      ${selected ? "bg-white/10" : "hover:bg-white/5"}`}
+                    key={i}
+                    onClick={() => setDate(d)}
+                    className={`rounded-xl h-12 border border-cx-border ${
+                      selected ? "bg-white/10 text-white" : "bg-cx-bg text-cx-muted hover:text-white hover:bg-white/5"
+                    } ${inMonth ? "" : "opacity-40"}`}
                   >
-                    {d.slice(8,10)}
+                    {d.getDate()}
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {/* Slots */}
-          <div className="w-80">
-            <div className="text-cx-muted text-sm mb-2">Available times</div>
+          {/* Times */}
+          <div>
+            <div className="font-semibold mb-3">Available times</div>
             <div className="flex flex-wrap gap-2">
-              {slots.map((iso) => {
-                const isActive = sel === iso;
+              {slots.map((s) => {
+                const d = new Date(s.start);
+                const label = d.toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                });
+                const isSel = selectedISO === s.start;
                 return (
                   <button
-                    key={iso}
-                    onClick={() => setSel(iso)}
-                    className={`px-3 py-1.5 rounded-xl border border-cx-border ${isActive ? "bg-white/10" : "hover:bg-white/5"}`}
+                    key={s.start}
+                    onClick={() => setSelectedISO(s.start)}
+                    className={`px-3 py-1.5 rounded-xl border border-cx-border ${
+                      isSel ? "bg-white/10 text-white" : "text-cx-muted hover:text-white hover:bg-white/5"
+                    }`}
                   >
-                    {localLabelFromUTC(iso)}
+                    {label}
                   </button>
                 );
               })}
-              {slots.length === 0 && <div className="text-cx-muted text-sm">No times.</div>}
+              {slots.length === 0 && (
+                <div className="text-cx-muted">No times.</div>
+              )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Client details */}
+      {/* Details */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <label className="block text-sm text-cx-muted mb-1">Client name</label>
-            <input className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
-              value={name} onChange={e=>setName(e.target.value)} />
+            <div className="text-sm text-cx-muted mb-1">Client name</div>
+            <input
+              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Full name"
+            />
           </div>
           <div>
-            <label className="block text-sm text-cx-muted mb-1">Client email</label>
-            <input className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
-              value={email} onChange={e=>setEmail(e.target.value)} />
+            <div className="text-sm text-cx-muted mb-1">Client email</div>
+            <input
+              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="email@example.com"
+              type="email"
+            />
           </div>
           <div>
-            <label className="block text-sm text-cx-muted mb-1">Phone (E.164)</label>
-            <input className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
-              value={phone} onChange={e=>setPhone(e.target.value)} />
+            <div className="text-sm text-cx-muted mb-1">Phone (E.164)</div>
+            <input
+              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+              value={phone}
+              onChange={(e) => setPhone(normalizeE164(e.target.value))}
+              placeholder="+1XXXXXXXXXX"
+            />
           </div>
         </div>
 
-        {msg && <div className="mt-3 text-sm text-rose-400">{msg}</div>}
+        {err && <div className="text-rose-400 text-sm mt-3">{err}</div>}
 
         <div className="mt-4 flex gap-3">
-          <button onClick={createAppointment} disabled={busy} className="btn-pill btn-pill--active">
-            {busy ? "Booking…" : "Create appointment"}
+          <button
+            className="btn-pill btn-pill--active"
+            disabled={busy}
+            onClick={createAppt}
+          >
+            {busy ? "Creating…" : "Create appointment"}
           </button>
-          <a href="/appointments" className="btn-pill">Cancel</a>
+          <button
+            className="btn-pill"
+            onClick={() => {
+              setSelectedISO(null);
+              setErr(null);
+            }}
+          >
+            Cancel
+          </button>
         </div>
       </div>
     </div>
