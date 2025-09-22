@@ -1,75 +1,67 @@
-export const dynamic = "force-dynamic";
+import { NextResponse } from "next/server";
 
-import { NextRequest, NextResponse } from "next/server";
+const CAL_BASE = process.env.CAL_BASE_URL ?? "https://api.cal.com";
+const CAL_API_KEY = process.env.CAL_API_KEY!;
 
-export async function POST(req: NextRequest) {
+type BookBody = {
+  eventTypeId: number;
+  startISO: string;     // e.g. "2025-09-22T15:15:00.000Z"
+  name: string;
+  email: string;
+  timeZone?: string;    // e.g. "America/New_York"
+  phone?: string;       // optional, saved as metadata
+};
+
+/**
+ * Minimal Cal.com booking proxy.
+ * IMPORTANT: we DO NOT send `lengthInMinutes` – Cal will use the Event Type's fixed duration.
+ */
+export async function POST(req: Request) {
   try {
-    const body = await req.json();
+    const body = (await req.json()) as BookBody;
 
-    const {
-      eventTypeId,      // number | string
-      start,            // ISO string (MUST be UTC, e.g. "2025-09-22T14:00:00Z")
-      timeZone,         // e.g. "America/New_York"
-      name,             // attendee name
-      email,            // attendee email (Cal.com requires an attendee object)
-      phoneNumber,      // E.164 if you have it
-      lengthInMinutes,  // optional override; otherwise Cal uses the event type length
-      metadata,         // optional object
-    } = body || {};
-
-    if (!process.env.CALCOM_API_KEY) {
-      return NextResponse.json({ error: "CALCOM_API_KEY missing" }, { status: 500 });
-    }
-    if (!eventTypeId || !start || !name || !email) {
+    if (!CAL_API_KEY) {
       return NextResponse.json(
-        { error: "Missing required fields: eventTypeId, start, name, email" },
+        { error: "Missing CAL_API_KEY on server." },
+        { status: 500 }
+      );
+    }
+
+    const { eventTypeId, startISO, name, email, timeZone, phone } = body;
+
+    if (!eventTypeId || !startISO || !name || !email) {
+      return NextResponse.json(
+        { error: "Missing required fields: eventTypeId, startISO, name, email." },
         { status: 400 }
       );
     }
 
-    const payload: any = {
-      start,                           // must be UTC
-      eventTypeId: Number(eventTypeId),
-      attendee: {
-        name,
-        email,
-        timeZone: timeZone ?? "America/New_York",
-        phoneNumber: phoneNumber ?? undefined,
-        language: "en",
-      },
+    const payload: Record<string, any> = {
+      eventTypeId,
+      start: startISO,
+      name,
+      email,
+      // only send timezone if provided; Cal falls back if omitted
+      ...(timeZone ? { timeZone } : {}),
+      // stash phone in metadata so it shows on the Cal booking
+      ...(phone ? { metadata: { phone } } : {}),
     };
-    if (lengthInMinutes) payload.lengthInMinutes = Number(lengthInMinutes);
-    if (metadata) payload.metadata = metadata;
 
-    const r = await fetch("https://api.cal.com/v2/bookings", {
+    const resp = await fetch(`${CAL_BASE}/v2/bookings`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.CALCOM_API_KEY}`,
+        Authorization: `Bearer ${CAL_API_KEY}`,
         "Content-Type": "application/json",
-        "cal-api-version": "2024-08-13", // required for /v2/bookings
       },
       body: JSON.stringify(payload),
-      cache: "no-store",
     });
 
-    const text = await r.text();
-    const json = text ? JSON.parse(text) : {};
-
-    if (!r.ok) {
-      return NextResponse.json(
-        {
-          status: r.status,
-          body: json,
-          hint:
-            "Confirm the start is UTC (Z suffix), eventTypeId is correct for this API key’s workspace, and cal-api-version=2024-08-13.",
-        },
-        { status: 502 }
-      );
-    }
-
-    // Return the booking object { data: {...} }
-    return NextResponse.json(json);
-  } catch (e: any) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const data = await resp.json();
+    return NextResponse.json(data, { status: resp.status });
+  } catch (err: any) {
+    return NextResponse.json(
+      { error: "Booking failed", detail: String(err?.message ?? err) },
+      { status: 500 }
+    );
   }
 }
