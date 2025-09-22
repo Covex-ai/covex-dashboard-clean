@@ -6,9 +6,10 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-const LOGO_HEIGHT_PX = 192; // keep logo the same size
-// Cut vertical padding by ~25% (was p-6 md:p-8)
-const CARD_PADDING = "px-6 py-4 md:px-8 md:py-6";
+/** 2× bigger logo */
+const LOGO_HEIGHT_PX = 384;
+/** ~10% less vertical padding vs p-6/md:p-8 */
+const CARD_PADDING = "px-6 py-5 md:px-8 md:py-7";
 
 type Mode = "signin" | "signup";
 
@@ -17,9 +18,9 @@ export default function LoginPage() {
   const router = useRouter();
 
   const [mode, setMode] = useState<Mode>("signin");
-  const [identifier, setIdentifier] = useState("");
-  const [email, setEmail] = useState("");
-  const [username, setUsername] = useState("");
+  const [identifier, setIdentifier] = useState(""); // email OR username (sign-in)
+  const [email, setEmail] = useState("");           // email (sign-up)
+  const [username, setUsername] = useState("");     // username (sign-up)
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -41,7 +42,7 @@ export default function LoginPage() {
   async function resolveEmailForSignIn(id: string): Promise<string> {
     const trimmed = id.trim();
     if (!trimmed) return trimmed;
-    if (trimmed.includes("@")) return trimmed;
+    if (trimmed.includes("@")) return trimmed; // already an email
     const { data } = await supabase.rpc("lookup_email_for_username", { u: trimmed });
     return data || trimmed;
   }
@@ -60,6 +61,7 @@ export default function LoginPage() {
   async function signUp() {
     setBusy(true);
     setMsg(null);
+
     if (!email.trim() || !pw.trim() || !username.trim()) {
       setBusy(false);
       return setMsg("Email, username, and password are required.");
@@ -68,7 +70,10 @@ export default function LoginPage() {
       setBusy(false);
       return setMsg("Username must be at least 3 characters.");
     }
-    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", { u: username.trim() });
+
+    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", {
+      u: username.trim(),
+    });
     if (availErr) {
       setBusy(false);
       return setMsg("Could not verify username availability. Try again.");
@@ -77,6 +82,7 @@ export default function LoginPage() {
       setBusy(false);
       return setMsg("That username is taken. Please choose another.");
     }
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password: pw,
@@ -86,13 +92,16 @@ export default function LoginPage() {
       setBusy(false);
       return setMsg(error.message);
     }
+
     try {
       const uid = data.user?.id;
       if (uid) {
         await supabase.from("profiles").update({ username: username.trim(), email }).eq("id", uid);
       }
     } catch {}
+
     setBusy(false);
+
     if (data.session) {
       setGateCookie();
       router.replace("/dashboard");
@@ -112,10 +121,10 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* keep width the same; only height reduced via padding/spacing */}
+      {/* same width; slightly less vertical padding */}
       <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Logo (same size), slightly tighter margin below (mb-4 instead of mb-6) */}
-        <div className="flex justify-center mb-4">
+        {/* Logo (2× bigger). Note: no fixed Tailwind h-[...] so inline style controls height */}
+        <div className="flex justify-center mb-5">
           {logoOk ? (
             <Image
               src={LOGO_SRC}
@@ -125,7 +134,7 @@ export default function LoginPage() {
               priority
               draggable={false}
               onError={() => setLogoOk(false)}
-              className="opacity-95 object-contain"
+              className="opacity-95 object-contain w-auto"
               style={{ height: LOGO_HEIGHT_PX, width: "auto" }}
             />
           ) : (
@@ -138,7 +147,7 @@ export default function LoginPage() {
             <>
               <label className="block text-sm text-cx-muted mb-1">Email or username</label>
               <input
-                className="w-full mb-2 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 placeholder="email@company.com or your-company"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
@@ -150,7 +159,7 @@ export default function LoginPage() {
             <>
               <label className="block text-sm text-cx-muted mb-1">Company username</label>
               <input
-                className="w-full mb-2 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 placeholder="your-company"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -159,7 +168,7 @@ export default function LoginPage() {
               />
               <label className="block text-sm text-cx-muted mb-1">Email</label>
               <input
-                className="w-full mb-2 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -171,7 +180,7 @@ export default function LoginPage() {
 
           <label className="block text-sm text-cx-muted mb-1">Password</label>
           <input
-            className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+            className="w-full mb-4 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
             type="password"
             value={pw}
             onChange={(e) => setPw(e.target.value)}
@@ -179,13 +188,13 @@ export default function LoginPage() {
             required
           />
 
-          {msg && <div className="text-sm text-rose-400 mb-2">{msg}</div>}
+          {msg && <div className="text-sm text-rose-400 mb-3">{msg}</div>}
 
           <button type="submit" disabled={busy} className="btn-pill btn-pill--active w-full justify-center">
             {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
           </button>
 
-          <div className="text-center mt-3">
+          <div className="text-center mt-4">
             {mode === "signin" ? (
               <button
                 type="button"
@@ -207,6 +216,7 @@ export default function LoginPage() {
         </form>
       </div>
 
+      {/* Safety: hide any stray h1 injected by other code */}
       <style jsx global>{`
         .login-card h1 { display: none !important; }
       `}</style>
