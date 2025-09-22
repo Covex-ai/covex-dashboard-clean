@@ -6,9 +6,9 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 type ServiceRow = {
   id: number;
   business_id: string;
-  code: string;
-  name: string;
-  event_type_id: number | null;
+  code: string;                 // unique per business (e.g., CLEAN_45)
+  name: string;                 // display name
+  event_type_id: number | null; // Cal.com event type id
   duration_min: number | null;
   default_price_cents: number | null;
   active: boolean;
@@ -44,29 +44,40 @@ export default function NewAppointmentPage() {
   const [selectedISO, setSelectedISO] = useState<string | null>(null);
 
   const [name, setName] = useState("");
-  const [email, setEmail] = useState(""); // will be prefilled from session
+  const [email, setEmail] = useState("");
   const [phoneLocal, setPhoneLocal] = useState(""); // 10 digits
   const phoneE164 = US_CC + phoneLocal;
 
+  const [bizId, setBizId] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const current = services.find((s) => s.id === serviceId) || null;
 
-  // ✅ Prefill email from the signed-in user (once)
+  // --- Ensure business_id for this user (critical for mirroring) ---
+  async function ensureBusinessId(): Promise<string | null> {
+    // 1) try to read
+    const { data: p } = await supabase.from("profiles").select("business_id").single();
+    if (p?.business_id) return p.business_id as string;
+
+    // 2) try to create via RPC if available
+    try {
+      // This RPC must exist per our earlier setup; if not, it will throw and we just re-read
+      await supabase.rpc("ensure_business_for_me");
+      const { data: p2 } = await supabase.from("profiles").select("business_id").single();
+      return p2?.business_id ?? null;
+    } catch {
+      // fallback: re-read once more anyway
+      const { data: p3 } = await supabase.from("profiles").select("business_id").single();
+      return p3?.business_id ?? null;
+    }
+  }
+
   useEffect(() => {
     (async () => {
-      try {
-        const { data } = await supabase.auth.getUser();
-        const u = data?.user;
-        const authedEmail =
-          u?.email ||
-          (u?.user_metadata && (u.user_metadata.email as string)) ||
-          "";
-        if (!email && authedEmail) setEmail(authedEmail);
-      } catch {}
+      const id = await ensureBusinessId();
+      setBizId(id ?? null);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -108,17 +119,30 @@ export default function NewAppointmentPage() {
         setErr(msgOf(e));
       }
     })();
-  }, [serviceId, date]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serviceId, date, current?.event_type_id]); // include event_type_id safety
 
   async function createAppt() {
     setErr(null);
+
+    // Validate inputs
     if (!current?.event_type_id) return setErr("This service is missing its Cal Event Type ID.");
     if (!selectedISO) return setErr("Please select a time.");
-    if (!name.trim() || !email.trim()) return setErr("Name and email are required.");
+    if (!name.trim()) return setErr("Client name is required.");
+    if (!email.trim()) return setErr("Client email is required.");
     if (phoneLocal.replace(/\D/g, "").length !== 10) return setErr("Enter a 10-digit US phone number.");
 
     setBusy(true);
     try {
+      // Make sure we have a business_id for mirroring (create if missing)
+      const business_id = bizId ?? (await ensureBusinessId());
+      if (!business_id) {
+        throw new Error(
+          "No business is linked to this account yet. Open Settings and click “Fix now”, then try again."
+        );
+      }
+      setBizId(business_id);
+
+      // 1) Book on Cal.com
       const payload = {
         eventTypeId: current.event_type_id,
         startISO: selectedISO,
@@ -135,26 +159,31 @@ export default function NewAppointmentPage() {
       const j = await r.json();
       if (!r.ok) throw new Error(msgOf(j?.error || j));
 
-      const { data: me } = await supabase.from("profiles").select("business_id").single();
+      // 2) Mirror into Supabase
+      const priceUsd =
+        current.default_price_cents != null
+          ? Math.round(current.default_price_cents / 100)
+          : null;
 
-      if (me?.business_id) {
-        await supabase.from("appointments").insert({
-          business_id: me.business_id,
-          booking_id: j?.data?.uid ?? j?.data?.id ?? null,
-          status: "Booked",
-          source: "Dashboard",
-          caller_name: payload.name,
-          caller_phone_e164: phoneE164,
-          service_raw: current.name,
-          normalized_service: current.code,
-          start_ts: selectedISO,
-          price_usd:
-            current.default_price_cents != null
-              ? Math.round(current.default_price_cents / 100)
-              : null,
-        });
+      const { error: insErr } = await supabase.from("appointments").insert({
+        business_id,
+        booking_id: j?.data?.id ?? null,
+        status: "Booked",
+        source: "Dashboard",
+        caller_name: payload.name,
+        caller_phone_e164: phoneE164,
+        service_raw: current.name,
+        normalized_service: current.code, // keep your code as your normalized tag
+        start_ts: selectedISO,
+        price_usd: priceUsd,
+      });
+
+      if (insErr) {
+        // Show the actual DB/RLS error so it’s debuggable
+        throw new Error(`Database insert failed: ${insErr.message}`);
       }
 
+      // 3) UX reset
       alert("Appointment created ✅");
       setSelectedISO(null);
     } catch (e) {
