@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-// ↑ 2x bigger logo
+/** 2x bigger than before */
 const LOGO_HEIGHT_PX = 192;
 const CARD_PADDING = "p-6 md:p-8";
 
@@ -41,7 +41,7 @@ export default function LoginPage() {
   async function resolveEmailForSignIn(id: string): Promise<string> {
     const trimmed = id.trim();
     if (!trimmed) return trimmed;
-    if (trimmed.includes("@")) return trimmed; // already an email
+    if (trimmed.includes("@")) return trimmed;
     const { data } = await supabase.rpc("lookup_email_for_username", { u: trimmed });
     return data || trimmed;
   }
@@ -70,9 +70,7 @@ export default function LoginPage() {
       return setMsg("Username must be at least 3 characters.");
     }
 
-    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", {
-      u: username.trim(),
-    });
+    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", { u: username.trim() });
     if (availErr) {
       setBusy(false);
       return setMsg("Could not verify username availability. Try again.");
@@ -132,7 +130,7 @@ export default function LoginPage() {
               priority
               draggable={false}
               onError={() => setLogoOk(false)}
-              className="opacity-95 object-contain"
+              className="opacity-95 object-contain h-[192px] w-auto"
               style={{ height: LOGO_HEIGHT_PX, width: "auto" }}
             />
           ) : (
@@ -140,12 +138,8 @@ export default function LoginPage() {
           )}
         </div>
 
-        {/* Hidden heading (removes visible 'Sign in' text) */}
-        <h1 className="sr-only">
-          {mode === "signin" ? "Sign in" : "Create your account"}
-        </h1>
+        {/* NOTE: No visible heading here anymore */}
 
-        {/* FORM */}
         <form onSubmit={handleSubmit}>
           {mode === "signin" ? (
             <>
@@ -195,11 +189,7 @@ export default function LoginPage() {
 
           {msg && <div className="text-sm text-rose-400 mb-3">{msg}</div>}
 
-          <button
-            type="submit"
-            disabled={busy}
-            className="btn-pill btn-pill--active w-full justify-center"
-          >
+          <button type="submit" disabled={busy} className="btn-pill btn-pill--active w-full justify-center">
             {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
           </button>
 
