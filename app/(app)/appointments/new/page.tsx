@@ -6,7 +6,7 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 type ServiceRow = {
   id: number;
   business_id: string;
-  code: string; // required & unique per business
+  code: string;
   name: string;
   event_type_id: number | null;
   duration_min: number | null;
@@ -14,7 +14,8 @@ type ServiceRow = {
   active: boolean;
 };
 
-type Slot = { start: string }; // ISO
+type RawSlot = string | { start?: string; startTime?: string; time?: string; utcStart?: string };
+type Slot = { iso: string };
 
 function tz() {
   try {
@@ -25,16 +26,31 @@ function tz() {
 }
 
 function normalizeE164(input: string): string {
-  // Keep digits only
   const digits = (input || "").replace(/\D/g, "");
-  // if it already includes country 1 and is 11 digits -> +1XXXXXXXXXX
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  // if 10 digits -> assume US
   if (digits.length === 10) return `+1${digits}`;
-  // if user typed + and other chars, coerce to +digits
   if (input.trim().startsWith("+")) return `+${digits}`;
-  // fallback: empty or not enough digits -> return "+1"
   return digits ? `+${digits}` : "+1";
+}
+
+// ---- NEW: robust slot normalizer ----
+function extractISO(raw: RawSlot): string | null {
+  if (typeof raw === "string") return raw;
+  if (raw?.start) return raw.start;
+  if (raw?.startTime) return raw.startTime;
+  if (raw?.utcStart) return raw.utcStart;
+  if (raw?.time) return raw.time;
+  return null;
+}
+function toSlots(rawList: RawSlot[]): Slot[] {
+  const out: Slot[] = [];
+  for (const r of rawList ?? []) {
+    const iso = extractISO(r);
+    if (!iso) continue;
+    const ms = Date.parse(iso);
+    if (!Number.isNaN(ms)) out.push({ iso });
+  }
+  return out;
 }
 
 export default function NewAppointmentPage() {
@@ -57,7 +73,6 @@ export default function NewAppointmentPage() {
 
   useEffect(() => {
     (async () => {
-      // Load active services for this business visible by RLS
       const { data, error } = await supabase
         .from("services")
         .select("*")
@@ -66,19 +81,16 @@ export default function NewAppointmentPage() {
         .order("id", { ascending: true });
       if (!error && data) {
         setServices(data as any);
-        if (data.length && !serviceId) {
-          setServiceId((data[0] as any).id);
-        }
+        if (data.length && !serviceId) setServiceId((data[0] as any).id);
       }
     })();
   }, []);
 
-  // Fetch slots whenever service/date changes
+  // Fetch availability when service/date changes
   useEffect(() => {
     setSlots([]);
     setSelectedISO(null);
     setErr(null);
-
     if (!currentService?.event_type_id) return;
 
     (async () => {
@@ -97,7 +109,9 @@ export default function NewAppointmentPage() {
         const json = await res.json();
         if (!res.ok) throw new Error(json?.error || "Availability failed");
 
-        setSlots((json?.slots ?? []) as Slot[]);
+        // Accept strings OR objects and coerce to ISO strings.
+        const normalized = toSlots(json?.slots ?? []);
+        setSlots(normalized);
       } catch (e: any) {
         setErr(e?.message ?? "Failed to load availability.");
       }
@@ -123,7 +137,6 @@ export default function NewAppointmentPage() {
       timeZone: tz(),
       phone: phoneE164,
     };
-
     if (!payload.name || !payload.email) {
       setErr("Name and email are required.");
       return;
@@ -139,15 +152,11 @@ export default function NewAppointmentPage() {
       const j = await r.json();
       if (!r.ok) {
         throw new Error(
-          j?.error?.message ||
-            j?.error ||
-            j?.message ||
-            "Booking failed. Please try another time."
+          j?.error?.message || j?.error || j?.message || "Booking failed. Please try another time."
         );
       }
 
-      // Optional: also insert a row into appointments for your dashboard.
-      // We’ll store core bits your schema uses.
+      // Mirror to Supabase appointments
       const { data: me } = await supabase
         .from("profiles")
         .select("business_id")
@@ -157,7 +166,7 @@ export default function NewAppointmentPage() {
       if (me?.business_id) {
         await supabase.from("appointments").insert({
           business_id: me.business_id,
-          booking_id: j?.data?.id ?? null, // Cal booking id if present
+          booking_id: j?.data?.id ?? null,
           status: "Booked",
           source: "Dashboard",
           caller_name: payload.name,
@@ -165,17 +174,14 @@ export default function NewAppointmentPage() {
           service_raw: currentService.name,
           normalized_service: currentService.code,
           start_ts: selectedISO,
-          end_ts: null,
           price_usd:
             currentService.default_price_cents != null
               ? Math.round(currentService.default_price_cents / 100)
               : null,
-          created_at: new Date().toISOString(),
         });
       }
 
       alert("Appointment created ✅");
-      // Reset
       setSelectedISO(null);
     } catch (e: any) {
       setErr(String(e?.message ?? e));
@@ -184,11 +190,11 @@ export default function NewAppointmentPage() {
     }
   }
 
-  // Build date grid (simple 6 rows)
+  // Calendar grid (Mon-start)
   const days: Date[] = useMemo(() => {
     const first = new Date(date.getFullYear(), date.getMonth(), 1);
     const start = new Date(first);
-    start.setDate(1 - ((first.getDay() + 6) % 7)); // Monday grid
+    start.setDate(1 - ((first.getDay() + 6) % 7));
     const list: Date[] = [];
     for (let i = 0; i < 42; i++) {
       const d = new Date(start);
@@ -224,7 +230,7 @@ export default function NewAppointmentPage() {
         </select>
       </div>
 
-      {/* Date/Times */}
+      {/* Date & Times */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="grid grid-cols-1 md:grid-cols-[1fr,320px] gap-6">
           {/* Calendar */}
@@ -241,10 +247,7 @@ export default function NewAppointmentPage() {
                 ←
               </button>
               <div className="font-semibold">
-                {date.toLocaleString(undefined, {
-                  month: "long",
-                  year: "numeric",
-                })}
+                {date.toLocaleString(undefined, { month: "long", year: "numeric" })}
               </div>
               <button
                 className="btn-pill"
@@ -287,16 +290,17 @@ export default function NewAppointmentPage() {
             <div className="font-semibold mb-3">Available times</div>
             <div className="flex flex-wrap gap-2">
               {slots.map((s) => {
-                const d = new Date(s.start);
-                const label = d.toLocaleTimeString([], {
-                  hour: "numeric",
-                  minute: "2-digit",
-                });
-                const isSel = selectedISO === s.start;
+                const d = new Date(s.iso);
+                const label =
+                  Number.isNaN(d.getTime())
+                    ? "Invalid"
+                    : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
+                const isSel = selectedISO === s.iso;
                 return (
                   <button
-                    key={s.start}
-                    onClick={() => setSelectedISO(s.start)}
+                    key={s.iso}
+                    onClick={() => setSelectedISO(s.iso)}
                     className={`px-3 py-1.5 rounded-xl border border-cx-border ${
                       isSel ? "bg-white/10 text-white" : "text-cx-muted hover:text-white hover:bg-white/5"
                     }`}
@@ -305,9 +309,7 @@ export default function NewAppointmentPage() {
                   </button>
                 );
               })}
-              {slots.length === 0 && (
-                <div className="text-cx-muted">No times.</div>
-              )}
+              {slots.length === 0 && <div className="text-cx-muted">No times.</div>}
             </div>
           </div>
         </div>
@@ -349,11 +351,7 @@ export default function NewAppointmentPage() {
         {err && <div className="text-rose-400 text-sm mt-3">{err}</div>}
 
         <div className="mt-4 flex gap-3">
-          <button
-            className="btn-pill btn-pill--active"
-            disabled={busy}
-            onClick={createAppt}
-          >
+          <button className="btn-pill btn-pill--active" disabled={busy} onClick={createAppt}>
             {busy ? "Creating…" : "Create appointment"}
           </button>
           <button
