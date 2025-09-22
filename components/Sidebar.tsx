@@ -9,7 +9,7 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 const links = [
   { href: "/dashboard", label: "Overview" },
   { href: "/appointments", label: "Appointments" },
-  { href: "/calendar", label: "Calendar" },        // ← NEW
+  { href: "/calendar", label: "Calendar" },
   { href: "/services", label: "Services" },
   { href: "/settings", label: "Settings" },
 ];
@@ -37,7 +37,7 @@ export default function Sidebar() {
             alt="COVEX"
             width={1600}
             height={400}
-            className="opacity-95 h-16 w-auto object-contain"
+            className="opacity-95 h-32 w-auto object-contain" {/* was h-16 → now h-32 */}
             priority
             draggable={false}
             onError={() => setLogoOk(false)}
