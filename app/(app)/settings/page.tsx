@@ -39,20 +39,47 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
   const [seeding, setSeeding] = useState(false);
+  const [healing, setHealing] = useState(false);
+
+  async function ensureBiz() {
+    setHealing(true);
+    try {
+      // Idempotent: creates profile.business_id and businesses row if missing
+      await supabase.rpc("ensure_profile_and_business");
+    } catch {
+      // ignore; read will still run
+    } finally {
+      setHealing(false);
+    }
+  }
 
   async function load() {
     setLoading(true);
+    setMsg(null);
+
+    // self-heal first (fixes brand new accounts)
+    await ensureBiz();
+
+    // read the business row under RLS; don't throw on 0 rows
     const { data, error } = await supabase
       .from("businesses")
       .select("id,name,industry,is_mobile")
-      .single();
-    if (!error && data) setBiz(data as Biz);
+      .maybeSingle();
+
+    if (error) {
+      setMsg(error.message);
+      setBiz(null);
+    } else {
+      setBiz((data as Biz) ?? null);
+    }
+
     setLoading(false);
   }
 
   useEffect(() => {
     load();
-    // Realtime for businesses (rarely changes, but keeps UI fresh)
+
+    // Realtime for businesses (keeps UI fresh)
     const ch = supabase
       .channel("rt-businesses")
       .on(
@@ -61,6 +88,7 @@ export default function SettingsPage() {
         () => load()
       )
       .subscribe();
+
     return () => {
       supabase.removeChannel(ch);
     };
@@ -90,7 +118,6 @@ export default function SettingsPage() {
     }
     setSeeding(true);
     setMsg(null);
-    // calls the SQL function we created earlier
     const { error } = await supabase.rpc("seed_services_for_business_id", {
       p_business: biz.id,
       p_industry: biz.industry,
@@ -103,8 +130,34 @@ export default function SettingsPage() {
     setMsg("Seeded default services for your industry. You can adjust them in the Services list.");
   }
 
-  if (loading || !biz) {
+  if (loading) {
     return <div className="text-cx-muted">Loading…</div>;
+  }
+
+  // If still no row, show a small in-theme fix action (no redesign)
+  if (!biz) {
+    return (
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 space-y-3">
+        <div className="text-rose-400">No business found for this account.</div>
+        <div className="text-cx-muted text-sm">
+          Click fix, then refresh. If it persists, run the backfill SQL once.
+        </div>
+        <div className="flex gap-2">
+          <button
+            className="btn-pill btn-pill--active"
+            onClick={async () => {
+              await ensureBiz();
+              await load();
+            }}
+            disabled={healing}
+          >
+            {healing ? "Fixing…" : "Fix now"}
+          </button>
+          <button className="btn-pill" onClick={() => location.reload()}>Refresh</button>
+        </div>
+        {msg && <div className="text-rose-400 text-sm">{msg}</div>}
+      </div>
+    );
   }
 
   return (
