@@ -16,16 +16,15 @@ export default function LoginPage() {
   const router = useRouter();
 
   const [mode, setMode] = useState<Mode>("signin");
-  const [identifier, setIdentifier] = useState(""); // email OR username (for sign-in)
-  const [email, setEmail] = useState("");           // email (for sign-up)
-  const [username, setUsername] = useState("");     // username (for sign-up)
+  const [identifier, setIdentifier] = useState(""); // email OR username (sign-in)
+  const [email, setEmail] = useState("");           // email (sign-up)
+  const [username, setUsername] = useState("");     // username (sign-up)
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [logoOk, setLogoOk] = useState(true);
-  const [redirectTo, setRedirectTo] = useState("/dashboard"); // default
+  const [redirectTo, setRedirectTo] = useState("/dashboard");
 
-  // Read ?redirect=... without useSearchParams (avoids Suspense requirement)
   useEffect(() => {
     try {
       const sp = new URLSearchParams(window.location.search);
@@ -35,18 +34,16 @@ export default function LoginPage() {
   }, []);
 
   function setGateCookie() {
-    // Match whatever your middleware expects
     document.cookie = "covex_session=1; Max-Age=2592000; Path=/; SameSite=Lax";
   }
 
   async function resolveEmailForSignIn(id: string): Promise<string> {
     const trimmed = id.trim();
     if (!trimmed) return trimmed;
-    if (trimmed.includes("@")) return trimmed; // looks like email
-    // Otherwise treat as username -> resolve via RPC
-    const { data, error } = await supabase.rpc("lookup_email_for_username", { u: trimmed });
-    if (error) return trimmed; // fallback, Supabase will error if wrong
-    return data || trimmed;
+    if (trimmed.includes("@")) return trimmed; // already an email
+    // username -> resolve to email via RPC
+    const { data } = await supabase.rpc("lookup_email_for_username", { u: trimmed });
+    return data || trimmed; // fallback; Supabase auth will error if invalid
   }
 
   async function signIn() {
@@ -73,8 +70,10 @@ export default function LoginPage() {
       return setMsg("Username must be at least 3 characters.");
     }
 
-    // Pre-check username availability (RPC from earlier SQL)
-    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", { u: username.trim() });
+    // Pre-check username availability against profiles + auth meta
+    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", {
+      u: username.trim(),
+    });
     if (availErr) {
       setBusy(false);
       return setMsg("Could not verify username availability. Try again.");
@@ -84,7 +83,6 @@ export default function LoginPage() {
       return setMsg("That username is taken. Please choose another.");
     }
 
-    // Create user; stash username in user_metadata
     const { data, error } = await supabase.auth.signUp({
       email,
       password: pw,
@@ -95,15 +93,13 @@ export default function LoginPage() {
       return setMsg(error.message);
     }
 
-    // Mirror username into profiles.username (RLS policy from earlier SQL)
+    // Mirror into profiles (owner can update own row via RLS)
     try {
       const uid = data.user?.id;
       if (uid) {
         await supabase.from("profiles").update({ username: username.trim(), email }).eq("id", uid);
       }
-    } catch {
-      /* ignore if policy not yet applied */
-    }
+    } catch {}
 
     setBusy(false);
 
@@ -117,12 +113,16 @@ export default function LoginPage() {
     }
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Enter" && !busy) void (mode === "signin" ? signIn() : signUp());
+  // ENTER submits the visible form (like ChatGPT)
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (busy) return;
+    if (mode === "signin") await signIn();
+    else await signUp();
   }
 
   return (
-    <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6" onKeyDown={onKeyDown}>
+    <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
       <div className={`w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
         {/* Logo */}
         <div className="flex justify-center mb-6">
@@ -143,99 +143,90 @@ export default function LoginPage() {
           )}
         </div>
 
-        {/* Centered mode toggle (segmented) */}
-        <div className="flex justify-center mb-6">
-          <div className="flex gap-2">
-            <button
-              className={`btn-pill ${mode === "signin" ? "btn-pill--active" : ""}`}
-              onClick={() => { setMsg(null); setMode("signin"); }}
-              type="button"
-            >
-              Sign in
-            </button>
-            <button
-              className={`btn-pill ${mode === "signup" ? "btn-pill--active" : ""}`}
-              onClick={() => { setMsg(null); setMode("signup"); }}
-              type="button"
-            >
-              Sign up
-            </button>
-          </div>
-        </div>
+        {/* Title */}
+        <h1 className="text-lg font-semibold text-center mb-4">
+          {mode === "signin" ? "Sign in" : "Create your account"}
+        </h1>
 
-        {/* Form */}
-        {mode === "signin" ? (
-          <>
-            <label className="block text-sm text-cx-muted mb-1">Email or username</label>
-            <input
-              className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-              placeholder="email@company.com or your-company"
-              value={identifier}
-              onChange={(e) => setIdentifier(e.target.value)}
-              autoComplete="username"
-            />
-          </>
-        ) : (
-          <>
-            <label className="block text-sm text-cx-muted mb-1">Company username</label>
-            <input
-              className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-              placeholder="your-company"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-            />
-
-            <label className="block text-sm text-cx-muted mb-1">Email</label>
-            <input
-              className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-            />
-          </>
-        )}
-
-        <label className="block text-sm text-cx-muted mb-1">Password</label>
-        <input
-          className="w-full mb-4 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-          type="password"
-          value={pw}
-          onChange={(e) => setPw(e.target.value)}
-          autoComplete={mode === "signin" ? "current-password" : "new-password"}
-        />
-
-        {msg && <div className="text-sm text-rose-400 mb-3">{msg}</div>}
-
-        <button
-          onClick={mode === "signin" ? signIn : signUp}
-          disabled={busy}
-          className="btn-pill btn-pill--active w-full justify-center"
-        >
-          {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
-        </button>
-
-        {/* Secondary switch link below button for extra discoverability */}
-        <div className="text-center mt-4">
+        {/* FORM: pressing Enter submits */}
+        <form onSubmit={handleSubmit}>
           {mode === "signin" ? (
-            <button
-              type="button"
-              className="text-cx-muted hover:text-white underline underline-offset-4"
-              onClick={() => { setMsg(null); setMode("signup"); }}
-            >
-              Need an account? Sign up
-            </button>
+            <>
+              <label className="block text-sm text-cx-muted mb-1">Email or username</label>
+              <input
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                placeholder="email@company.com or your-company"
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                autoComplete="username"
+                required
+              />
+            </>
           ) : (
-            <button
-              type="button"
-              className="text-cx-muted hover:text-white underline underline-offset-4"
-              onClick={() => { setMsg(null); setMode("signin"); }}
-            >
-              Have an account? Sign in
-            </button>
+            <>
+              <label className="block text-sm text-cx-muted mb-1">Company username</label>
+              <input
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                placeholder="your-company"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                required
+              />
+
+              <label className="block text-sm text-cx-muted mb-1">Email</label>
+              <input
+                className="w-full mb-3 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
+                required
+              />
+            </>
           )}
-        </div>
+
+          <label className="block text-sm text-cx-muted mb-1">Password</label>
+          <input
+            className="w-full mb-4 px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
+            type="password"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            autoComplete={mode === "signin" ? "current-password" : "new-password"}
+            required
+          />
+
+          {msg && <div className="text-sm text-rose-400 mb-3">{msg}</div>}
+
+          <button
+            type="submit"
+            disabled={busy}
+            className="btn-pill btn-pill--active w-full justify-center"
+          >
+            {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
+          </button>
+
+          {/* Bottom-only switch (no top buttons) */}
+          <div className="text-center mt-4">
+            {mode === "signin" ? (
+              <button
+                type="button"
+                className="text-cx-muted hover:text-white underline underline-offset-4"
+                onClick={() => { setMsg(null); setMode("signup"); }}
+              >
+                Need an account? Sign up
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="text-cx-muted hover:text-white underline underline-offset-4"
+                onClick={() => { setMsg(null); setMode("signin"); }}
+              >
+                Have an account? Sign in
+              </button>
+            )}
+          </div>
+        </form>
 
         <p className="text-xs text-cx-muted mt-4 text-center">Accounts are secured by Supabase Auth.</p>
       </div>
