@@ -17,23 +17,13 @@ type ServiceRow = {
 type RawSlot = string | { start?: string; startTime?: string; time?: string; utcStart?: string };
 type Slot = { iso: string };
 
+const US_COUNTRY = "+1";
+
 function tz() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
-  } catch {
-    return "America/New_York";
-  }
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"; }
+  catch { return "America/New_York"; }
 }
 
-function normalizeE164(input: string): string {
-  const digits = (input || "").replace(/\D/g, "");
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  if (digits.length === 10) return `+1${digits}`;
-  if (input.trim().startsWith("+")) return `+${digits}`;
-  return digits ? `+${digits}` : "+1";
-}
-
-// ---- NEW: robust slot normalizer ----
 function extractISO(raw: RawSlot): string | null {
   if (typeof raw === "string") return raw;
   if (raw?.start) return raw.start;
@@ -47,8 +37,7 @@ function toSlots(rawList: RawSlot[]): Slot[] {
   for (const r of rawList ?? []) {
     const iso = extractISO(r);
     if (!iso) continue;
-    const ms = Date.parse(iso);
-    if (!Number.isNaN(ms)) out.push({ iso });
+    if (!Number.isNaN(Date.parse(iso))) out.push({ iso });
   }
   return out;
 }
@@ -62,9 +51,12 @@ export default function NewAppointmentPage() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [selectedISO, setSelectedISO] = useState<string | null>(null);
 
-  const [name, setName] = useState<string>("");
-  const [email, setEmail] = useState<string>("");
-  const [phone, setPhone] = useState<string>("+1"); // default +1
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+
+  // Lock country code to +1 and collect exactly 10 digits
+  const [phoneLocal, setPhoneLocal] = useState(""); // digits only
+  const phoneE164 = US_COUNTRY + phoneLocal;
 
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -86,7 +78,6 @@ export default function NewAppointmentPage() {
     })();
   }, []);
 
-  // Fetch availability when service/date changes
   useEffect(() => {
     setSlots([]);
     setSelectedISO(null);
@@ -109,9 +100,7 @@ export default function NewAppointmentPage() {
         const json = await res.json();
         if (!res.ok) throw new Error(json?.error || "Availability failed");
 
-        // Accept strings OR objects and coerce to ISO strings.
-        const normalized = toSlots(json?.slots ?? []);
-        setSlots(normalized);
+        setSlots(toSlots(json?.slots ?? []));
       } catch (e: any) {
         setErr(e?.message ?? "Failed to load availability.");
       }
@@ -120,49 +109,38 @@ export default function NewAppointmentPage() {
 
   async function createAppt() {
     setErr(null);
+
     if (!currentService?.event_type_id) {
       setErr("This service is missing its Cal Event Type ID.");
       return;
     }
-    if (!selectedISO) {
-      setErr("Please select a time.");
-      return;
-    }
-    const phoneE164 = normalizeE164(phone);
-    const payload = {
-      eventTypeId: currentService.event_type_id,
-      startISO: selectedISO,
-      name: name.trim(),
-      email: email.trim(),
-      timeZone: tz(),
-      phone: phoneE164,
-    };
-    if (!payload.name || !payload.email) {
-      setErr("Name and email are required.");
-      return;
+    if (!selectedISO) return setErr("Please select a time.");
+    if (!name.trim() || !email.trim()) return setErr("Name and email are required.");
+    if (phoneLocal.replace(/\D/g, "").length !== 10) {
+      return setErr("Enter a 10-digit US phone number.");
     }
 
     setBusy(true);
     try {
+      const payload = {
+        eventTypeId: currentService.event_type_id,
+        startISO: selectedISO,
+        name: name.trim(),
+        email: email.trim(),
+        timeZone: tz(),
+        phone: phoneE164, // e.g. +11234567890
+      };
+
       const r = await fetch("/api/cal/book", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const j = await r.json();
-      if (!r.ok) {
-        throw new Error(
-          j?.error?.message || j?.error || j?.message || "Booking failed. Please try another time."
-        );
-      }
+      if (!r.ok) throw new Error(j?.error?.message || j?.error || "Booking failed.");
 
-      // Mirror to Supabase appointments
-      const { data: me } = await supabase
-        .from("profiles")
-        .select("business_id")
-        .limit(1)
-        .single();
-
+      // Mirror to Supabase
+      const { data: me } = await supabase.from("profiles").select("business_id").single();
       if (me?.business_id) {
         await supabase.from("appointments").insert({
           business_id: me.business_id,
@@ -170,7 +148,7 @@ export default function NewAppointmentPage() {
           status: "Booked",
           source: "Dashboard",
           caller_name: payload.name,
-          caller_phone_e164: payload.phone,
+          caller_phone_e164: phoneE164,
           service_raw: currentService.name,
           normalized_service: currentService.code,
           start_ts: selectedISO,
@@ -190,11 +168,11 @@ export default function NewAppointmentPage() {
     }
   }
 
-  // Calendar grid (Mon-start)
+  // Calendar helpers
   const days: Date[] = useMemo(() => {
     const first = new Date(date.getFullYear(), date.getMonth(), 1);
     const start = new Date(first);
-    start.setDate(1 - ((first.getDay() + 6) % 7));
+    start.setDate(1 - ((first.getDay() + 6) % 7)); // Monday grid
     const list: Date[] = [];
     for (let i = 0; i < 42; i++) {
       const d = new Date(start);
@@ -213,7 +191,6 @@ export default function NewAppointmentPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">New Appointment</h1>
 
-      {/* Service */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="text-sm text-cx-muted mb-2">Service</div>
         <select
@@ -230,7 +207,6 @@ export default function NewAppointmentPage() {
         </select>
       </div>
 
-      {/* Date & Times */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="grid grid-cols-1 md:grid-cols-[1fr,320px] gap-6">
           {/* Calendar */}
@@ -291,11 +267,7 @@ export default function NewAppointmentPage() {
             <div className="flex flex-wrap gap-2">
               {slots.map((s) => {
                 const d = new Date(s.iso);
-                const label =
-                  Number.isNaN(d.getTime())
-                    ? "Invalid"
-                    : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-
+                const label = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
                 const isSel = selectedISO === s.iso;
                 return (
                   <button
@@ -338,13 +310,21 @@ export default function NewAppointmentPage() {
             />
           </div>
           <div>
-            <div className="text-sm text-cx-muted mb-1">Phone (E.164)</div>
-            <input
-              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
-              value={phone}
-              onChange={(e) => setPhone(normalizeE164(e.target.value))}
-              placeholder="+1XXXXXXXXXX"
-            />
+            <div className="text-sm text-cx-muted mb-1">Phone (US)</div>
+            <div className="flex">
+              <span className="px-3 py-2 rounded-l-xl border border-cx-border bg-cx-bg text-cx-muted select-none">
+                {US_COUNTRY}
+              </span>
+              <input
+                className="w-full bg-cx-bg border border-l-0 border-cx-border rounded-r-xl px-3 py-2"
+                value={phoneLocal}
+                onChange={(e) => setPhoneLocal(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                placeholder="5551234567"
+                inputMode="numeric"
+                pattern="[0-9]*"
+              />
+            </div>
+            <div className="text-xs text-cx-muted mt-1">Exactly 10 digits; country code is locked to +1.</div>
           </div>
         </div>
 
@@ -354,13 +334,7 @@ export default function NewAppointmentPage() {
           <button className="btn-pill btn-pill--active" disabled={busy} onClick={createAppt}>
             {busy ? "Creating…" : "Create appointment"}
           </button>
-          <button
-            className="btn-pill"
-            onClick={() => {
-              setSelectedISO(null);
-              setErr(null);
-            }}
-          >
+          <button className="btn-pill" onClick={() => setSelectedISO(null)}>
             Cancel
           </button>
         </div>
