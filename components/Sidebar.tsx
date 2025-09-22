@@ -37,7 +37,7 @@ export default function Sidebar() {
             alt="COVEX"
             width={1600}
             height={400}
-            className="opacity-95 h-32 w-auto object-contain" {/* was h-16 → now h-32 */}
+            className="opacity-95 h-32 w-auto object-contain"
             priority
             draggable={false}
             onError={() => setLogoOk(false)}
