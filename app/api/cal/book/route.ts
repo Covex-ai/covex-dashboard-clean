@@ -5,7 +5,7 @@ function toUTC(isoLike: string): string {
   return d.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-// If you renamed the phone booking question, change this slug:
+// If your phone booking question uses a different slug, change this:
 const PHONE_FIELD_SLUG = "attendeePhoneNumber";
 
 export async function POST(req: NextRequest) {
@@ -18,6 +18,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "eventTypeId, startISO, name, email, timeZone required" }, { status: 400 });
   }
 
+  // ✅ Do NOT set a location here; some event types only allow attendeeAddress/in-person.
+  // We still send the phone in the booking question + attendee so your SMS workflow can fire.
   const payload: any = {
     start: toUTC(startISO),
     eventTypeId: Number(eventTypeId),
@@ -25,13 +27,11 @@ export async function POST(req: NextRequest) {
       name,
       email,
       timeZone,
-      phoneNumber: phone || undefined, // store on attendee too
+      phoneNumber: phone || undefined, // helpful but not what workflows read
       language: "en",
     },
-    // <-- THIS is what triggers your SMS workflow by filling the booking question
+    // This is what your SMS workflow looks at:
     bookingFieldsResponses: phone ? { [PHONE_FIELD_SLUG]: phone } : undefined,
-    // Optional: if you run “phone” location for this event type
-    location: { type: "phone" },
     metadata: phone ? { phone } : undefined,
   };
 
