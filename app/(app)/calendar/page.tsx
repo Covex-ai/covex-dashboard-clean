@@ -3,238 +3,170 @@
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
-type Biz = { is_mobile: boolean };
-
-type Appt = {
+type Row = {
   id: number;
-  start_ts: string;
+  business_id: string;
+  start_ts: string;          // UTC in DB
   end_ts: string | null;
-  status: string | null; // 'Booked' | 'Rescheduled' | 'Cancelled' | 'Completed'
   caller_name: string | null;
   caller_phone_e164: string | null;
   service_raw: string | null;
-  normalized_service: string | null;
-  address_text: string | null;
+  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | null;
 };
 
-type DayEvent = {
-  id: number;
-  time: string; // e.g. "3:30 PM"
-  name: string;
-  phone: string;
-  service: string;
-  status: string;
-  address?: string | null;
-};
-
-function ymd(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
+function startOfMonthLocal(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
 }
-function startOfMonth(d = new Date()) {
-  const x = new Date(d);
-  x.setDate(1); x.setHours(0,0,0,0);
-  return x;
+function endOfMonthLocal(d: Date) {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
 }
-function endOfMonth(d = new Date()) {
-  const x = new Date(d);
-  x.setMonth(x.getMonth() + 1, 0); // last day of month
-  x.setHours(23,59,59,999);
-  return x;
-}
-function startOfCalendarGrid(d: Date) {
-  const first = startOfMonth(d);
-  const day = first.getDay(); // 0=Sun
-  const gridStart = new Date(first);
-  gridStart.setDate(first.getDate() - day);
-  gridStart.setHours(0,0,0,0);
-  return gridStart;
-}
-function addDays(d: Date, n: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-function fmtTime(dt: Date) {
-  return dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+// Sunday-first month grid: 6 rows x 7 cols (42 cells)
+function buildMonthGrid(view: Date) {
+  const first = startOfMonthLocal(view);
+  const start = new Date(first);
+  // first.getDay(): 0=Sun..6=Sat ; go back to previous Sunday
+  start.setDate(first.getDate() - first.getDay());
+  const days: Date[] = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    days.push(d);
+  }
+  return days;
 }
 
-function StatusDot({ s }: { s: string | null }) {
-  const v = (s ?? "").toLowerCase();
-  const base = "inline-block w-2 h-2 rounded-full";
-  if (v === "booked") return <span className={`${base}`} style={{ background: "#34d399" }} />;
-  if (v === "rescheduled") return <span className={`${base}`} style={{ background: "#fbbf24" }} />;
-  if (v === "cancelled") return <span className={`${base}`} style={{ background: "#f43f5e" }} />;
-  if (v === "completed") return <span className={`${base}`} style={{ background: "#d4d4d8" }} />;
-  return <span className={`${base}`} style={{ background: "#9aa2b1" }} />;
-}
-
-function StatusPill({ s }: { s: string | null }) {
-  const v = (s ?? "").toLowerCase();
-  const base = "px-2 py-1 rounded-lg text-xs font-medium border border-cx-border";
-  if (v === "booked") return <span className={`${base} text-emerald-400`}>Booked</span>;
-  if (v === "rescheduled") return <span className={`${base} text-amber-300`}>Rescheduled</span>;
-  if (v === "cancelled") return <span className={`${base} text-rose-400`}>Cancelled</span>;
-  if (v === "completed") return <span className={`${base} text-zinc-300`}>Completed</span>;
-  return <span className={`${base} text-cx-muted`}>{s ?? "-"}</span>;
+// Bounds for the *local* calendar day; send as UTC ISO to DB
+function dayBoundsISO(d: Date) {
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
+  const end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0);
+  return { startISO: start.toISOString(), endISO: end.toISOString() };
 }
 
 export default function CalendarPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [cursor, setCursor] = useState<Date>(() => startOfMonth(new Date())); // which month we’re looking at
-  const [isMobile, setIsMobile] = useState(false);
-  const [byDay, setByDay] = useState<Record<string, DayEvent[]>>({});
-  const [selectedDay, setSelectedDay] = useState<string>(() => ymd(new Date()));
+  const [view, setView] = useState<Date>(() => {
+    const t = new Date();
+    return new Date(t.getFullYear(), t.getMonth(), 1); // ensure month is local-safe
+  });
+  const [selected, setSelected] = useState<Date>(() => {
+    const t = new Date();
+    return new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  });
+  const [rows, setRows] = useState<Row[]>([]);
+  const [busy, setBusy] = useState(false);
 
-  async function loadBiz() {
-    const { data } = await supabase.from("businesses").select("is_mobile").single();
-    setIsMobile(Boolean((data as Biz)?.is_mobile));
-  }
+  const grid = useMemo(() => buildMonthGrid(view), [view]);
+  const monthLabel = view.toLocaleString(undefined, { month: "long", year: "numeric" });
 
-  async function loadAppts(month: Date) {
-    const gridStart = startOfCalendarGrid(month);
-    const gridEnd = addDays(gridStart, 42); // 6 weeks view
-    const { data } = await supabase
+  async function loadDay(d: Date) {
+    setBusy(true);
+    const { startISO, endISO } = dayBoundsISO(d);
+    const { data, error } = await supabase
       .from("appointments")
-      .select("id,start_ts,status,caller_name,caller_phone_e164,service_raw,normalized_service,address_text")
-      .gte("start_ts", gridStart.toISOString())
-      .lt("start_ts", gridEnd.toISOString())
+      .select("*")
+      .gte("start_ts", startISO)
+      .lt("start_ts", endISO)
       .order("start_ts", { ascending: true });
-
-    const map: Record<string, DayEvent[]> = {};
-    for (const r of (data as Appt[] | null) ?? []) {
-      const dt = new Date(r.start_ts);
-      const key = ymd(dt);
-      const ev: DayEvent = {
-        id: r.id,
-        time: fmtTime(dt),
-        name: r.caller_name ?? "—",
-        phone: r.caller_phone_e164 ?? "—",
-        service: r.service_raw || r.normalized_service || "—",
-        status: r.status ?? "-",
-        address: r.address_text ?? null,
-      };
-      (map[key] ||= []).push(ev);
-    }
-    setByDay(map);
-
-    // Keep selection sane: if selected not in this 6-week grid, set to first of month
-    const firstOfMonth = ymd(startOfMonth(month));
-    if (!map[selectedDay]) setSelectedDay(firstOfMonth);
+    if (!error && data) setRows(data as any);
+    setBusy(false);
   }
 
-  useEffect(() => { loadBiz(); }, []);
-  useEffect(() => { loadAppts(cursor); }, [cursor]);
+  useEffect(() => { loadDay(selected); }, [selected]); // load when date changes
 
-  // Realtime refresh if anything changes
+  // Realtime: refresh the selected day when any appointment changes
   useEffect(() => {
     const ch = supabase
-      .channel("rt-appointments")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => loadAppts(cursor))
+      .channel("rt-cal")
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => {
+        loadDay(selected);
+      })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [cursor]);
+  }, [selected, supabase]);
 
-  // Build 6-week grid
-  const gridStart = startOfCalendarGrid(cursor);
-  const days: Date[] = Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
-  const monthIndex = cursor.getMonth();
+  function isSameDay(a: Date, b: Date) {
+    return a.getFullYear() === b.getFullYear() &&
+           a.getMonth() === b.getMonth() &&
+           a.getDate() === b.getDate();
+  }
+  function isSameMonth(a: Date, b: Date) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+  }
 
-  function gotoToday() {
+  function goPrevMonth() {
+    const next = new Date(view.getFullYear(), view.getMonth() - 1, 1);
+    setView(next);
+    // if selected is outside new month grid, keep the same day number if possible
+    setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28)));
+  }
+  function goNextMonth() {
+    const next = new Date(view.getFullYear(), view.getMonth() + 1, 1);
+    setView(next);
+    setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28)));
+  }
+  function goToday() {
     const t = new Date();
-    setCursor(startOfMonth(t));
-    setSelectedDay(ymd(t));
-  }
-  function prevMonth() {
-    const x = new Date(cursor);
-    x.setMonth(x.getMonth() - 1, 1);
-    setCursor(startOfMonth(x));
-  }
-  function nextMonth() {
-    const x = new Date(cursor);
-    x.setMonth(x.getMonth() + 1, 1);
-    setCursor(startOfMonth(x));
+    const m1 = new Date(t.getFullYear(), t.getMonth(), 1);
+    setView(m1);
+    setSelected(new Date(t.getFullYear(), t.getMonth(), t.getDate()));
   }
 
-  const selectedEvents = byDay[selectedDay] || [];
+  // Status badge class
+  function statusBadge(s: Row["status"]) {
+    if (s === "Cancelled") return "badge badge--cancelled";
+    if (s === "Rescheduled") return "badge badge--rescheduled";
+    if (s === "Completed") return "badge badge--completed";
+    return "badge badge--booked";
+  }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <h1 className="text-lg font-semibold">
-          {cursor.toLocaleString(undefined, { month: "long", year: "numeric" })}
-        </h1>
-        <div className="ml-auto flex items-center gap-2">
-          <button className="btn-pill" onClick={prevMonth}>← Prev</button>
-          <button className="btn-pill" onClick={gotoToday}>Today</button>
-          <button className="btn-pill" onClick={nextMonth}>Next →</button>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">{monthLabel}</h1>
+        <div className="flex gap-2">
+          <button className="btn-pill" onClick={goPrevMonth}>← Prev</button>
+          <button className="btn-pill btn-pill--active" onClick={goToday}>Today</button>
+          <button className="btn-pill" onClick={goNextMonth}>Next →</button>
         </div>
       </div>
 
       {/* Month grid */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        {/* Weekday header */}
-        <div className="grid grid-cols-7 gap-2 text-xs text-cx-muted mb-2 px-1">
-          {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((d) => (
-            <div key={d} className="text-center">{d}</div>
-          ))}
+        <div className="grid grid-cols-7 gap-2 text-center text-sm text-cx-muted mb-2">
+          <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
         </div>
 
         <div className="grid grid-cols-7 gap-2">
-          {days.map((d) => {
-            const key = ymd(d);
-            const inMonth = d.getMonth() === monthIndex;
-            const isSelected = key === selectedDay;
-            const events = byDay[key] || [];
-            const counts = {
-              booked: events.filter(e => e.status.toLowerCase() === "booked").length,
-              rescheduled: events.filter(e => e.status.toLowerCase() === "rescheduled").length,
-              cancelled: events.filter(e => e.status.toLowerCase() === "cancelled").length,
-              completed: events.filter(e => e.status.toLowerCase() === "completed").length,
-            };
-
+          {grid.map((d, i) => {
+            const inMonth = isSameMonth(d, view);
+            const sel = isSameDay(d, selected);
             return (
               <button
-                key={key}
-                onClick={() => setSelectedDay(key)}
-                className={`text-left rounded-xl border px-2 py-2 transition
-                  ${isSelected ? "border-white bg-white/10" : "border-cx-border bg-cx-bg hover:bg-white/5"}
-                  ${inMonth ? "opacity-100" : "opacity-60"}`}
-                title={`${events.length} appointments`}
+                key={i}
+                onClick={() => setSelected(new Date(d.getFullYear(), d.getMonth(), d.getDate()))}
+                className={`rounded-xl h-12 border border-cx-border transition ${
+                  sel ? "bg-white/10 text-white" : "bg-cx-bg text-cx-muted hover:text-white hover:bg-white/5"
+                } ${inMonth ? "" : "opacity-40"}`}
+                title={d.toLocaleDateString()}
               >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs text-cx-muted">{d.getDate()}</span>
-                  {/* tiny status dots if any */}
-                  <div className="flex items-center gap-1">
-                    {counts.booked > 0 && <StatusDot s="Booked" />}
-                    {counts.rescheduled > 0 && <StatusDot s="Rescheduled" />}
-                    {counts.cancelled > 0 && <StatusDot s="Cancelled" />}
-                    {counts.completed > 0 && <StatusDot s="Completed" />}
-                  </div>
-                </div>
-                {events.length > 0 && (
-                  <div className="text-xs text-cx-muted">{events.length} appt{events.length > 1 ? "s" : ""}</div>
-                )}
+                {d.getDate()}
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* Selected day list */}
+      {/* Day list */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold">
-            {new Date(selectedDay).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" })}
-          </h3>
-          <div className="flex items-center gap-3 text-xs text-cx-muted">
-            <div className="flex items-center gap-1"><StatusDot s="Booked" />Booked</div>
-            <div className="flex items-center gap-1"><StatusDot s="Rescheduled" />Rescheduled</div>
-            <div className="flex items-center gap-1"><StatusDot s="Cancelled" />Cancelled</div>
-            <div className="flex items-center gap-1"><StatusDot s="Completed" />Completed</div>
+          <div className="font-semibold">
+            {selected.toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "short", day: "numeric" })}
+          </div>
+          <div className="text-xs flex items-center gap-3 text-cx-muted">
+            <span><span className="inline-block w-2 h-2 rounded-full bg-green-400 mr-1"></span>Booked</span>
+            <span><span className="inline-block w-2 h-2 rounded-full bg-amber-400 mr-1"></span>Rescheduled</span>
+            <span><span className="inline-block w-2 h-2 rounded-full bg-red-400 mr-1"></span>Cancelled</span>
+            <span><span className="inline-block w-2 h-2 rounded-full bg-slate-300 mr-1"></span>Completed</span>
           </div>
         </div>
 
@@ -245,26 +177,29 @@ export default function CalendarPage() {
                 <th className="py-2 pr-4">Time</th>
                 <th className="py-2 pr-4">Name</th>
                 <th className="py-2 pr-4">Phone</th>
-                {isMobile && <th className="py-2 pr-4">Address</th>}
                 <th className="py-2 pr-4">Service</th>
                 <th className="py-2 pr-4">Status</th>
               </tr>
             </thead>
             <tbody>
-              {selectedEvents.map((e) => (
-                <tr key={e.id} className="border-t border-cx-border">
-                  <td className="py-2 pr-4">{e.time}</td>
-                  <td className="py-2 pr-4">{e.name}</td>
-                  <td className="py-2 pr-4">{e.phone}</td>
-                  {isMobile && <td className="py-2 pr-4">{e.address ?? "—"}</td>}
-                  <td className="py-2 pr-4">{e.service}</td>
-                  <td className="py-2 pr-4"><StatusPill s={e.status} /></td>
-                </tr>
-              ))}
-              {selectedEvents.length === 0 && (
+              {rows.map((r) => {
+                const t = new Date(r.start_ts); // shown in local time
+                return (
+                  <tr key={r.id} className="border-t border-cx-border">
+                    <td className="py-2 pr-4">
+                      {t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                    </td>
+                    <td className="py-2 pr-4">{r.caller_name ?? "-"}</td>
+                    <td className="py-2 pr-4">{r.caller_phone_e164 ?? "-"}</td>
+                    <td className="py-2 pr-4">{r.service_raw ?? "-"}</td>
+                    <td className="py-2 pr-4"><span className={statusBadge(r.status)}>{r.status ?? "Booked"}</span></td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
                 <tr>
-                  <td className="py-6 text-center text-cx-muted" colSpan={isMobile ? 6 : 5}>
-                    No appointments for this day.
+                  <td className="py-6 text-center text-cx-muted" colSpan={5}>
+                    {busy ? "Loading…" : "No appointments for this day."}
                   </td>
                 </tr>
               )}
