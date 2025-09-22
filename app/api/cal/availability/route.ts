@@ -8,16 +8,16 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const eventTypeId = searchParams.get("eventTypeId");
-  const date = searchParams.get("date"); // YYYY-MM-DD (local day)
+  const date = searchParams.get("date"); // YYYY-MM-DD
   const timeZone = searchParams.get("timeZone") || "America/New_York";
 
   if (!eventTypeId || !date) {
     return NextResponse.json({ error: "eventTypeId and date are required" }, { status: 400 });
   }
 
-  // Make a day window in the user's timezone
-  const startISO = `${date}T00:00:00.000`;
-  const endISO = `${date}T23:59:59.999`;
+  // IMPORTANT: Cal.com’s /slots behaves most reliably when start/end are UTC (Z)
+  const startISO = `${date}T00:00:00.000Z`;
+  const endISO   = `${date}T23:59:59.999Z`;
 
   const url = new URL(`https://api.cal.com/v2/event-types/${eventTypeId}/slots`);
   url.searchParams.set("start", startISO);
@@ -29,23 +29,19 @@ export async function GET(req: NextRequest) {
     cache: "no-store",
   });
 
-  const body = await res.json().catch(() => ({}));
+  let body: any = null;
+  try { body = await res.json(); } catch (_) { body = null; }
 
   if (!res.ok) {
-    return NextResponse.json(
-      { error: body?.error || body || "Cal.com availability failed" },
-      { status: 502 }
-    );
+    const msg = body?.error?.message || body?.error || body || "Cal.com availability failed";
+    return NextResponse.json({ error: msg }, { status: 502 });
   }
 
-  // Normalize to array of ISO strings for the UI
+  // Normalize to array of ISO strings
   const raw = (body?.data ?? body?.slots ?? []) as any[];
   const slots: string[] = [];
   for (const s of raw) {
-    const iso =
-      typeof s === "string"
-        ? s
-        : s?.start || s?.startTime || s?.utcStart || s?.time || null;
+    const iso = typeof s === "string" ? s : s?.start || s?.startTime || s?.utcStart || s?.time || null;
     if (iso && !Number.isNaN(Date.parse(iso))) slots.push(iso);
   }
 
