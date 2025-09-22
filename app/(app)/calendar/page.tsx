@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-/** 2x bigger than before */
+/** 2× bigger logo */
 const LOGO_HEIGHT_PX = 192;
 const CARD_PADDING = "p-6 md:p-8";
 
@@ -118,8 +118,8 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      <div className={`w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Logo (2x size) */}
+      <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
+        {/* Logo (2× size) */}
         <div className="flex justify-center mb-6">
           {logoOk ? (
             <Image
@@ -130,7 +130,7 @@ export default function LoginPage() {
               priority
               draggable={false}
               onError={() => setLogoOk(false)}
-              className="opacity-95 object-contain h-[192px] w-auto"
+              className="opacity-95 object-contain"
               style={{ height: LOGO_HEIGHT_PX, width: "auto" }}
             />
           ) : (
@@ -138,7 +138,7 @@ export default function LoginPage() {
           )}
         </div>
 
-        {/* NOTE: No visible heading here anymore */}
+        {/* (No visible heading) */}
 
         <form onSubmit={handleSubmit}>
           {mode === "signin" ? (
@@ -213,9 +213,12 @@ export default function LoginPage() {
             )}
           </div>
         </form>
-
-        <p className="text-xs text-cx-muted mt-4 text-center">Accounts are secured by Supabase Auth.</p>
       </div>
+
+      {/* Bulletproof: hide any stray heading inside the card (if another file/layout injects it) */}
+      <style jsx global>{`
+        .login-card h1 { display: none !important; }
+      `}</style>
     </div>
   );
 }
