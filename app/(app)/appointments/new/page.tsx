@@ -1,393 +1,280 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
-type Biz = { id: string; is_mobile: boolean };
 type Service = {
   id: number;
   name: string;
-  active: boolean;
-  slot_minutes: number | null;
-  event_type_id: number | null;
+  active?: boolean;
+  default_price_cents?: number | null;
+  event_type_id?: number | null;    // Cal.com Event Type ID  ← tweak if your column is named differently
+  duration_min?: number | null;     // service length in minutes ← tweak if your column is named differently
 };
 
-function startOfDayUTC(d: Date) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return new Date(x.getTime() - x.getTimezoneOffset() * 60000).toISOString();
-}
-function endOfDayUTC(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return new Date(x.getTime() - x.getTimezoneOffset() * 60000).toISOString();
-}
-function plusMinutesISO(iso: string, m: number) {
-  const d = new Date(iso);
-  return new Date(d.getTime() + m * 60000).toISOString();
+type Slot = string; // ISO UTC, e.g. "2025-09-22T14:00:00Z"
+
+function addMinutes(isoUTC: string, mins: number) {
+  const d = new Date(isoUTC);
+  d.setUTCMinutes(d.getUTCMinutes() + mins);
+  return d.toISOString();
 }
 
 export default function NewAppointmentPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const router = useRouter();
-
-  const [biz, setBiz] = useState<Biz | null>(null);
   const [services, setServices] = useState<Service[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // form state
-  const [serviceId, setServiceId] = useState<number | "">("");
-  const selectedService = services.find((s) => s.id === serviceId) || null;
-
-  const [monthCursor, setMonthCursor] = useState(new Date());
-  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
-
-  const [loadingSlots, setLoadingSlots] = useState(false);
-  const [slots, setSlots] = useState<string[]>([]);
-  const [selectedStartISO, setSelectedStartISO] = useState<string | null>(null);
-
+  const [svcId, setSvcId] = useState<number | null>(null);
+  const [date, setDate] = useState<string>(() => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  });
+  const [tz, setTz] = useState("America/New_York");
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [sel, setSel] = useState<Slot | null>(null);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const [address, setAddress] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState(""); // Cal.com wants an attendee email
   const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const svc = services.find(s => s.id === svcId) || null;
 
-  useEffect(() => {
-    async function load() {
-      const b = await supabase.from("businesses").select("id,is_mobile").single();
-      const svc = await supabase
-        .from("services")
-        .select("id,name,active,slot_minutes,event_type_id")
-        .eq("active", true)
-        .order("sort_order", { ascending: true, nullsFirst: false })
-        .order("name", { ascending: true });
-
-      if (!b.error && b.data) setBiz(b.data as Biz);
-      if (!svc.error && svc.data) {
-        setServices(
-          (svc.data as any[]).map((s) => ({
-            ...s,
-            slot_minutes: s.slot_minutes ?? 60,
-          }))
-        );
-      }
-      setLoading(false);
+  async function loadServices() {
+    const { data, error } = await supabase
+      .from("services")
+      .select("id,name,active,default_price_cents,event_type_id,duration_min")
+      .order("name", { ascending: true });
+    if (!error) {
+      const rows = (data ?? []).filter(r => r.active !== false); // show inactive? tweak if needed
+      setServices(rows as Service[]);
+      if (!svcId && rows.length) setSvcId(rows[0].id);
     }
-    load();
-  }, [supabase]);
+  }
 
-  // ---- Availability (GET) ----
-  async function loadDaySlots(date: Date) {
-    setMsg(null);
+  async function loadSlots() {
     setSlots([]);
-    setSelectedStartISO(null);
+    setSel(null);
+    setMsg(null);
+    if (!svc) return;
 
-    if (!selectedService?.event_type_id) {
+    const evtId = svc.event_type_id;
+    if (!evtId) {
       setMsg("This service is missing its Cal Event Type ID (set it in Settings → Services).");
       return;
     }
 
-    setLoadingSlots(true);
+    const params = new URLSearchParams({
+      eventTypeId: String(evtId),
+      date,
+      timeZone: tz,
+    });
+    if (svc.duration_min) params.set("duration", String(svc.duration_min));
+
+    const r = await fetch(`/api/cal/availability?${params.toString()}`, { cache: "no-store" });
+    const json = await r.json();
+    if (!r.ok) {
+      setMsg(json?.body?.error?.message || json.error || "Failed to load availability.");
+      return;
+    }
+    setSlots((json.slots ?? []) as Slot[]);
+    if ((json.slots ?? []).length === 0) setMsg("No available times on this day.");
+  }
+
+  useEffect(() => { loadServices(); }, []);
+  useEffect(() => { if (svc) loadSlots(); /* eslint-disable-next-line */ }, [svcId, date, tz]);
+
+  async function createAppointment() {
     try {
-      const start = startOfDayUTC(date);
-      const end = endOfDayUTC(date);
-      const q = new URLSearchParams({
-        eventTypeId: String(selectedService.event_type_id),
-        start,
-        end,
-        timeZone,
-      }).toString();
+      setBusy(true);
+      setMsg(null);
+      if (!svc) throw new Error("Pick a service.");
+      if (!sel) throw new Error("Pick a time.");
+      if (!name) throw new Error("Enter the client name.");
+      if (!email) throw new Error("Enter an email (required for Cal.com).");
 
-      const r = await fetch(`/api/cal/availability?${q}`, { cache: "no-store" });
-      const j = await r.json().catch(() => ({} as any));
-
-      if (!r.ok) {
-        setMsg(
-          typeof j?.error === "string"
-            ? `Availability error: ${j.error}`
-            : "Cal.com availability failed"
-        );
-        return;
+      // 1) Book in Cal.com
+      const bookRes = await fetch("/api/cal/book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventTypeId: svc.event_type_id,
+          start: sel,                           // UTC
+          timeZone: tz,
+          name,
+          email,
+          phoneNumber: phone || undefined,
+          lengthInMinutes: svc.duration_min ?? undefined,
+          metadata: { source: "Covex Dashboard" },
+        }),
+      });
+      const booked = await bookRes.json();
+      if (!bookRes.ok) {
+        throw new Error(booked?.body?.error?.message || booked.error || "Cal.com booking failed.");
       }
 
-      const arr: string[] = Array.isArray(j?.slots) ? j.slots : [];
-      // For today, keep only future times
-      const now = new Date();
-      const filtered =
-        date.toDateString() === now.toDateString()
-          ? arr.filter((iso) => new Date(iso) > now)
-          : arr;
+      // Pull out booking UID & start/end
+      const cal = booked?.data ?? {};
+      const bookingUid: string | undefined = cal.uid;
+      const startUTC: string | undefined = cal.start;
+      const endUTC: string | undefined = cal.end;
 
-      setSlots(filtered);
-      if (filtered.length === 0) setMsg("No available times on this day.");
-    } catch (err: any) {
-      setMsg("Cal.com availability failed");
-    } finally {
-      setLoadingSlots(false);
-    }
-  }
+      // 2) Read current tenant (business) id
+      const prof = await supabase.from("profiles").select("business_id").single();
+      const business_id = prof.data?.business_id;
+      if (!business_id) throw new Error("Could not resolve your business_id from profiles.");
 
-  // Calendar grid
-  const days = buildMonthDays(monthCursor);
-  function buildMonthDays(d: Date) {
-    const y = d.getFullYear();
-    const m = d.getMonth();
-    const first = new Date(y, m, 1);
-    const start = new Date(first);
-    start.setDate(first.getDate() - ((first.getDay() + 6) % 7)); // Monday grid
-    const cells: Date[] = [];
-    for (let i = 0; i < 42; i++) {
-      const x = new Date(start);
-      x.setDate(start.getDate() + i);
-      cells.push(x);
-    }
-    return cells;
-  }
-  function isSameDay(a: Date, b: Date) {
-    return (
-      a.getFullYear() === b.getFullYear() &&
-      a.getMonth() === b.getMonth() &&
-      a.getDate() === b.getDate()
-    );
-  }
+      // 3) Insert into appointments
+      const price_usd =
+        (svc.default_price_cents ?? 0) > 0 ? Math.round((svc.default_price_cents ?? 0) / 100) : null;
+      const end_ts =
+        endUTC ?? addMinutes(sel, Math.max(15, Number(svc.duration_min ?? 0) || 30));
 
-  async function submit() {
-    setMsg(null);
-    if (!biz) return setMsg("Loading business…");
-    if (!selectedService) return setMsg("Pick a service");
-    if (!selectedService.event_type_id) return setMsg("This service is missing its Cal Event Type ID.");
-    if (!selectedDate) return setMsg("Pick a date on the calendar");
-    if (!selectedStartISO) return setMsg("Pick a time slot");
-    if (!name.trim()) return setMsg("Enter a name");
-
-    setBusy(true);
-    try {
-      const slotLen = selectedService.slot_minutes ?? 60;
-      const start_ts = selectedStartISO;
-      const end_ts = plusMinutesISO(start_ts, slotLen);
-
-      // local overlap guard
-      const overlap = await supabase
-        .from("appointments")
-        .select("id,start_ts,status")
-        .gte("start_ts", start_ts)
-        .lt("start_ts", end_ts);
-      const taken = (overlap.data || []).some(
-        (r) => String(r.status).toLowerCase() !== "cancelled"
-      );
-      if (taken) {
-        setMsg("That time overlaps with an existing appointment.");
-        setBusy(false);
-        return;
-      }
-
-      // insert locally
-      const payload: any = {
-        business_id: biz.id,
-        start_ts,
-        end_ts,
+      const { error: insErr } = await supabase.from("appointments").insert({
+        business_id,
+        booking_id: bookingUid ?? null,
         status: "Booked",
-        caller_name: name.trim(),
-        caller_phone_e164: phone.trim() || null,
-        service_raw: selectedService.name,
+        source: "Manual",
+        caller_name: name,
+        caller_phone_e164: phone || null,
+        service_raw: svc.name,
         normalized_service: null,
-        price_usd: null,
-        address_text: biz.is_mobile ? (address.trim() || null) : null,
-      };
-      const { data: created, error: insErr } = await supabase
-        .from("appointments")
-        .insert(payload)
-        .select("id")
-        .single();
-      if (insErr || !created) {
-        setMsg(insErr?.message || "Failed to create appointment");
-        setBusy(false);
-        return;
-      }
+        start_ts: startUTC ?? sel,
+        end_ts,
+        price_usd: price_usd,
+      });
 
-      // (Optional) book on Cal.com later once we add email collection
-      // await fetch("/api/cal/book", { ... })
-
-      router.replace("/appointments");
+      if (insErr) throw insErr;
+      setMsg("Booked and saved ✔");
+      // optional: router.push("/appointments");
+    } catch (e: any) {
+      setMsg(String(e.message ?? e));
     } finally {
       setBusy(false);
     }
   }
 
-  if (loading) return <div className="text-cx-muted">Loading…</div>;
+  // --- Simple calendar (month grid) ---
+  // You already have a calendar UI elsewhere; keep this minimal for now.
+  function DayButton({ ymd }: { ymd: string }) {
+    const isSelected = date === ymd;
+    return (
+      <button
+        onClick={() => setDate(ymd)}
+        className={`px-3 py-2 rounded-xl border border-cx-border ${isSelected ? "bg-white/10" : "hover:bg-white/5"} mr-2 mb-2`}
+      >
+        {ymd.slice(8, 10)}
+      </button>
+    );
+  }
+
+  // quick month model: today ± 14 days
+  const days = [...Array(28)].map((_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7 + i);
+    return d.toISOString().slice(0, 10);
+  });
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button onClick={() => history.back()} className="btn-pill">
-            ← Back
-          </button>
-          <h1 className="text-lg font-semibold">New Appointment</h1>
-        </div>
-      </div>
+      <h2 className="text-xl font-semibold">New Appointment</h2>
 
       {/* Service picker */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <label className="block text-sm text-cx-muted mb-1">Service</label>
+        <label className="block text-sm text-cx-muted mb-2">Service</label>
         <select
-          value={serviceId}
-          onChange={(e) => {
-            const v = e.target.value ? Number(e.target.value) : "";
-            setServiceId(v);
-            setSelectedDate(null);
-            setSlots([]);
-            setSelectedStartISO(null);
-            setMsg(null);
-          }}
-          className="w-full max-w-md px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none [color-scheme:dark]"
+          className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+          value={svcId ?? ""}
+          onChange={(e) => setSvcId(Number(e.target.value))}
         >
-          <option value="" className="text-black bg-white">
-            Select a service…
-          </option>
           {services.map((s) => (
-            <option key={s.id} value={s.id} className="text-black bg-white">
-              {s.name} • {s.slot_minutes ?? 60}m {s.event_type_id ? "" : "(set Event Type ID in Settings)"}
+            <option key={s.id} value={s.id}>
+              {s.name}
+              {s.duration_min ? ` • ${s.duration_min}m` : ""}
             </option>
           ))}
         </select>
       </div>
 
-      {/* Calendar + Times */}
+      {/* Calendar + slots */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Calendar */}
-          <div className="lg:col-span-2">
-            <div className="flex items-center justify-between mb-3">
-              <button
-                className="btn-pill"
-                onClick={() =>
-                  setMonthCursor(new Date(monthCursor.getFullYear(), monthCursor.getMonth() - 1, 1))
-                }
-              >
-                ←
-              </button>
-              <div className="font-semibold">
-                {monthCursor.toLocaleString(undefined, { month: "long", year: "numeric" })}
-              </div>
-              <button
-                className="btn-pill"
-                onClick={() =>
-                  setMonthCursor(new Date(monthCursor.getFullYear(), monthCursor.getMonth() + 1, 1))
-                }
-              >
-                →
-              </button>
-            </div>
-
-            <div className="grid grid-cols-7 gap-1 text-center text-xs text-cx-muted mb-1">
-              {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
-                <div key={d}>{d}</div>
+        <div className="flex items-start gap-6">
+          <div className="flex-1">
+            <div className="text-cx-muted text-sm mb-2">Pick a date</div>
+            <div className="flex flex-wrap">
+              {days.map((d) => (
+                <DayButton key={d} ymd={d} />
               ))}
-            </div>
-
-            <div className="grid grid-cols-7 gap-1">
-              {days.map((d, idx) => {
-                const out = d.getMonth() !== monthCursor.getMonth();
-                const past = d < new Date(new Date().toDateString());
-                const isSel = selectedDate && isSameDay(d, selectedDate);
-                return (
-                  <button
-                    key={idx}
-                    disabled={past || !selectedService}
-                    onClick={() => {
-                      setSelectedDate(d);
-                      if (selectedService) loadDaySlots(d);
-                    }}
-                    className={[
-                      "h-16 rounded-xl border transition text-sm flex items-center justify-center",
-                      isSel ? "border-white/80 bg-white/10 text-white" : "border-cx-border",
-                      out ? "opacity-40" : "",
-                      past ? "opacity-30 cursor-not-allowed" : "hover:bg-white/5",
-                    ].join(" ")}
-                    title={d.toDateString()}
-                  >
-                    {d.getDate()}
-                  </button>
-                );
-              })}
             </div>
           </div>
 
-          {/* Times */}
-          <div>
-            <div className="font-semibold mb-2">Available times</div>
-            {!selectedDate && (
-              <div className="text-cx-muted text-sm">Pick a date on the calendar.</div>
-            )}
-            {selectedDate && loadingSlots && (
-              <div className="text-cx-muted text-sm">Loading times…</div>
-            )}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {slots.map((iso) => (
-                <button
-                  key={iso}
-                  onClick={() => setSelectedStartISO(iso)}
-                  className={[
-                    "px-3 py-2 rounded-xl border",
-                    selectedStartISO === iso
-                      ? "border-white/80 bg-white/10 text-white"
-                      : "border-cx-border hover:bg-white/5",
-                  ].join(" ")}
-                >
-                  {new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
-                </button>
-              ))}
+          <div className="w-80">
+            <div className="text-cx-muted text-sm mb-2">Available times</div>
+            <div className="flex flex-wrap gap-2">
+              {slots.map((iso) => {
+                const d = new Date(iso);
+                const label = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+                const isActive = sel === iso;
+                return (
+                  <button
+                    key={iso}
+                    onClick={() => setSel(iso)}
+                    className={`px-3 py-1.5 rounded-xl border border-cx-border ${
+                      isActive ? "bg-white/10" : "hover:bg-white/5"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+              {slots.length === 0 && <div className="text-cx-muted text-sm">No times.</div>}
             </div>
-            {msg && <div className="text-rose-400 text-sm mt-3">{msg}</div>}
           </div>
         </div>
       </div>
 
-      {/* Person details */}
+      {/* Client details */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
-            <label className="block text-sm text-cx-muted mb-1">Name</label>
+            <label className="block text-sm text-cx-muted mb-1">Client name</label>
             <input
+              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-              placeholder="Client name"
             />
           </div>
           <div>
-            <label className="block text-sm text-cx-muted mb-1">Phone</label>
+            <label className="block text-sm text-cx-muted mb-1">Client email</label>
             <input
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              className="w-full px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-              placeholder="+1…"
+              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
             />
           </div>
-          {biz?.is_mobile && (
-            <div className="md:col-span-2">
-              <label className="block text-sm text-cx-muted mb-1">Address (for on-site jobs)</label>
-              <input
-                value={address}
-                onChange={(e) => setAddress(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none"
-                placeholder="Street, city, etc."
-              />
-            </div>
-          )}
+          <div>
+            <label className="block text-sm text-cx-muted mb-1">Phone (E.164)</label>
+            <input
+              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+            />
+          </div>
         </div>
 
-        <div className="mt-6 flex items-center gap-3">
-          <button onClick={submit} disabled={busy} className="btn-pill btn-pill--active">
-            {busy ? "Creating…" : "Create appointment"}
+        {msg && <div className="mt-3 text-sm text-rose-400">{msg}</div>}
+
+        <div className="mt-4 flex gap-3">
+          <button
+            onClick={createAppointment}
+            disabled={busy}
+            className="btn-pill btn-pill--active"
+          >
+            {busy ? "Booking…" : "Create appointment"}
           </button>
-          <button onClick={() => router.replace("/appointments")} className="btn-pill">
-            Cancel
-          </button>
+          <a href="/appointments" className="btn-pill">Cancel</a>
         </div>
       </div>
     </div>
