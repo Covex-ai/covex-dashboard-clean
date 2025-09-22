@@ -12,25 +12,17 @@ type ServiceRow = {
   duration_min: number | null;
   default_price_cents: number | null;
   active: boolean;
+  sort_order: number | null;
 };
 
 type RawSlot = string | { start?: string; startTime?: string; time?: string; utcStart?: string };
 type Slot = { iso: string };
 
-const US_COUNTRY = "+1";
-
+const US_CC = "+1";
 const tz = () => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"; }
   catch { return "America/New_York"; }
 };
-
-const msgOf = (e: any) => {
-  if (!e) return "Unknown error";
-  if (typeof e === "string") return e;
-  if (e.message) return e.message;
-  try { return JSON.stringify(e); } catch { return String(e); }
-};
-
 const toSlots = (rawList: RawSlot[]): Slot[] => {
   const out: Slot[] = [];
   for (const r of rawList ?? []) {
@@ -40,6 +32,7 @@ const toSlots = (rawList: RawSlot[]): Slot[] => {
   }
   return out;
 };
+const msgOf = (e: any) => (typeof e === "string" ? e : e?.message || JSON.stringify(e));
 
 export default function NewAppointmentPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
@@ -51,16 +44,31 @@ export default function NewAppointmentPage() {
   const [selectedISO, setSelectedISO] = useState<string | null>(null);
 
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [phoneLocal, setPhoneLocal] = useState(""); // 10 digits only
-  const phoneE164 = US_COUNTRY + phoneLocal;
+  const [email, setEmail] = useState(""); // will be prefilled from session
+  const [phoneLocal, setPhoneLocal] = useState(""); // 10 digits
+  const phoneE164 = US_CC + phoneLocal;
 
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const currentService = services.find((s) => s.id === serviceId) || null;
+  const current = services.find((s) => s.id === serviceId) || null;
 
-  // Load active services
+  // ✅ Prefill email from the signed-in user (once)
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        const u = data?.user;
+        const authedEmail =
+          u?.email ||
+          (u?.user_metadata && (u.user_metadata.email as string)) ||
+          "";
+        if (!email && authedEmail) setEmail(authedEmail);
+      } catch {}
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     (async () => {
       const { data, error } = await supabase
@@ -69,59 +77,50 @@ export default function NewAppointmentPage() {
         .eq("active", true)
         .order("sort_order", { ascending: true })
         .order("id", { ascending: true });
-      if (error) { setErr(msgOf(error)); return; }
+      if (error) setErr(msgOf(error));
       const list = (data as ServiceRow[]) || [];
       setServices(list);
       if (list.length && !serviceId) setServiceId(list[0].id);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Pull availability whenever service or date changes
   useEffect(() => {
-    setSlots([]);
-    setSelectedISO(null);
-    setErr(null);
-    if (!currentService?.event_type_id) return;
+    setSlots([]); setSelectedISO(null); setErr(null);
+    if (!current?.event_type_id) return;
 
     (async () => {
       try {
         const y = date.getFullYear();
-        const m = date.getMonth() + 1;
-        const d = date.getDate();
-        const dayStr = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-
+        const m = String(date.getMonth() + 1).padStart(2, "0");
+        const d = String(date.getDate()).padStart(2, "0");
+        const day = `${y}-${m}-${d}`;
         const usp = new URLSearchParams({
-          eventTypeId: String(currentService.event_type_id),
-          date: dayStr,                 // server route adds Z window for this date
+          eventTypeId: String(current.event_type_id),
+          date: day,
           timeZone: tz(),
         });
-
-        const res = await fetch(`/api/cal/availability?${usp.toString()}`);
-        const json = await res.json();
-        if (!res.ok) throw new Error(msgOf(json?.error || json));
-        setSlots(toSlots(json?.slots ?? []));
+        const r = await fetch(`/api/cal/availability?${usp}`);
+        const j = await r.json();
+        if (!r.ok) throw new Error(msgOf(j?.error || j));
+        setSlots(toSlots(j?.slots ?? []));
       } catch (e) {
         setErr(msgOf(e));
       }
     })();
-  }, [serviceId, date]);
+  }, [serviceId, date]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function createAppt() {
     setErr(null);
-
-    if (!currentService?.event_type_id) {
-      setErr("This service is missing its Cal Event Type ID.");
-      return;
-    }
+    if (!current?.event_type_id) return setErr("This service is missing its Cal Event Type ID.");
     if (!selectedISO) return setErr("Please select a time.");
     if (!name.trim() || !email.trim()) return setErr("Name and email are required.");
     if (phoneLocal.replace(/\D/g, "").length !== 10) return setErr("Enter a 10-digit US phone number.");
 
     setBusy(true);
     try {
-      // 1) Book on Cal
       const payload = {
-        eventTypeId: currentService.event_type_id,
+        eventTypeId: current.event_type_id,
         startISO: selectedISO,
         name: name.trim(),
         email: email.trim(),
@@ -136,22 +135,22 @@ export default function NewAppointmentPage() {
       const j = await r.json();
       if (!r.ok) throw new Error(msgOf(j?.error || j));
 
-      // 2) Mirror to Supabase
       const { data: me } = await supabase.from("profiles").select("business_id").single();
+
       if (me?.business_id) {
         await supabase.from("appointments").insert({
           business_id: me.business_id,
-          booking_id: j?.data?.id ?? null,
+          booking_id: j?.data?.uid ?? j?.data?.id ?? null,
           status: "Booked",
           source: "Dashboard",
           caller_name: payload.name,
           caller_phone_e164: phoneE164,
-          service_raw: currentService.name,
-          normalized_service: currentService.code,
+          service_raw: current.name,
+          normalized_service: current.code,
           start_ts: selectedISO,
           price_usd:
-            currentService.default_price_cents != null
-              ? Math.round(currentService.default_price_cents / 100)
+            current.default_price_cents != null
+              ? Math.round(current.default_price_cents / 100)
               : null,
         });
       }
@@ -165,7 +164,6 @@ export default function NewAppointmentPage() {
     }
   }
 
-  // Simple month grid
   const buildGrid = () => {
     const first = new Date(date.getFullYear(), date.getMonth(), 1);
     const start = new Date(first);
@@ -178,7 +176,6 @@ export default function NewAppointmentPage() {
     }
     return list;
   };
-
   const grid = buildGrid();
   const sameDay = (a: Date, b: Date) =>
     a.getFullYear() === b.getFullYear() &&
@@ -189,7 +186,6 @@ export default function NewAppointmentPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">New Appointment</h1>
 
-      {/* Service */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="text-sm text-cx-muted mb-2">Service</div>
         <select
@@ -206,10 +202,8 @@ export default function NewAppointmentPage() {
         </select>
       </div>
 
-      {/* Calendar + Times */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="grid grid-cols-1 md:grid-cols-[1fr,320px] gap-6">
-          {/* Calendar */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <button className="btn-pill" onClick={() => { const d = new Date(date); d.setMonth(d.getMonth() - 1); setDate(d); }}>←</button>
@@ -240,7 +234,6 @@ export default function NewAppointmentPage() {
             </div>
           </div>
 
-          {/* Times */}
           <div>
             <div className="font-semibold mb-3">Available times</div>
             <div className="flex flex-wrap gap-2">
@@ -266,34 +259,22 @@ export default function NewAppointmentPage() {
         </div>
       </div>
 
-      {/* Details */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <div className="text-sm text-cx-muted mb-1">Client name</div>
-            <input
-              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Full name"
-            />
+            <input className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+                   value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" />
           </div>
           <div>
             <div className="text-sm text-cx-muted mb-1">Client email</div>
-            <input
-              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="email@example.com"
-              type="email"
-            />
+            <input className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2"
+                   value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email@example.com" type="email" />
           </div>
           <div>
             <div className="text-sm text-cx-muted mb-1">Phone (US)</div>
             <div className="flex">
-              <span className="px-3 py-2 rounded-l-xl border border-cx-border bg-cx-bg text-cx-muted select-none">
-                {US_COUNTRY}
-              </span>
+              <span className="px-3 py-2 rounded-l-xl border border-cx-border bg-cx-bg text-cx-muted select-none">{US_CC}</span>
               <input
                 className="w-full bg-cx-bg border border-l-0 border-cx-border rounded-r-xl px-3 py-2"
                 value={phoneLocal}
@@ -313,9 +294,7 @@ export default function NewAppointmentPage() {
           <button className="btn-pill btn-pill--active" disabled={busy} onClick={createAppt}>
             {busy ? "Creating…" : "Create appointment"}
           </button>
-          <button className="btn-pill" onClick={() => setSelectedISO(null)}>
-            Cancel
-          </button>
+          <button className="btn-pill" onClick={() => setSelectedISO(null)}>Cancel</button>
         </div>
       </div>
     </div>
