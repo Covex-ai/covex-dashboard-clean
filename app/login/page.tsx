@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-/** 2× bigger logo */
+/** keep logo size the same */
 const LOGO_HEIGHT_PX = 192;
 const CARD_PADDING = "p-6 md:p-8";
 
@@ -118,8 +118,9 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Logo (2× size) */}
+      {/* ↓↓↓ smaller card: max-w-md (~25% narrower than max-w-xl) ↓↓↓ */}
+      <div className={`login-card w-full max-w-md bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
+        {/* Logo (kept same size) */}
         <div className="flex justify-center mb-6">
           {logoOk ? (
             <Image
@@ -138,8 +139,7 @@ export default function LoginPage() {
           )}
         </div>
 
-        {/* (No visible heading) */}
-
+        {/* form */}
         <form onSubmit={handleSubmit}>
           {mode === "signin" ? (
             <>
@@ -215,7 +215,7 @@ export default function LoginPage() {
         </form>
       </div>
 
-      {/* Bulletproof: hide any stray heading inside the card (if another file/layout injects it) */}
+      {/* Safety: hide any stray h1 injected by other code */}
       <style jsx global>{`
         .login-card h1 { display: none !important; }
       `}</style>
