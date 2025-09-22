@@ -6,11 +6,11 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-/** DO NOT CHANGE: keep whatever size you already use */
-const LOGO_HEIGHT_PX = 288; // if your current is different (e.g. 192/384), set it to that exact value
+/** KEEP your current logo size. If your file already used a different number, set it back to that. */
+const LOGO_HEIGHT_PX = 288;
 
-/** Same horizontal padding; ~25% less vertical padding */
-const CARD_PADDING = "px-6 py-[1.125rem] md:px-8 md:py-6"; // 1.5rem → 1.125rem, 2rem → 1.5rem
+/** ↓ ONLY change: same horizontal padding, ~25% less vertical padding (1.5rem→1.125rem, 2rem→1.5rem) */
+const CARD_PADDING = "px-6 py-[1.125rem] md:px-8 md:py-6";
 
 type Mode = "signin" | "signup";
 
@@ -122,7 +122,7 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* Same width as before (max-w-xl). Only vertical padding reduced. */}
+      {/* Same width (max-w-xl). Only vertical padding reduced via CARD_PADDING. */}
       <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
         {/* Logo: EXACT same size */}
         <div className="flex justify-center mb-3">
@@ -217,7 +217,6 @@ export default function LoginPage() {
         </form>
       </div>
 
-      {/* Safety: hide any stray h1 injected by other code */}
       <style jsx global>{`
         .login-card h1 { display: none !important; }
       `}</style>
