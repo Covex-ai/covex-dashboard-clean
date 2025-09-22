@@ -6,7 +6,8 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-const LOGO_HEIGHT_PX = 96;
+/** 2× bigger logo */
+const LOGO_HEIGHT_PX = 192;
 const CARD_PADDING = "p-6 md:p-8";
 
 type Mode = "signin" | "signup";
@@ -40,10 +41,9 @@ export default function LoginPage() {
   async function resolveEmailForSignIn(id: string): Promise<string> {
     const trimmed = id.trim();
     if (!trimmed) return trimmed;
-    if (trimmed.includes("@")) return trimmed; // already an email
-    // username -> resolve to email via RPC
+    if (trimmed.includes("@")) return trimmed;
     const { data } = await supabase.rpc("lookup_email_for_username", { u: trimmed });
-    return data || trimmed; // fallback; Supabase auth will error if invalid
+    return data || trimmed;
   }
 
   async function signIn() {
@@ -70,10 +70,7 @@ export default function LoginPage() {
       return setMsg("Username must be at least 3 characters.");
     }
 
-    // Pre-check username availability against profiles + auth meta
-    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", {
-      u: username.trim(),
-    });
+    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", { u: username.trim() });
     if (availErr) {
       setBusy(false);
       return setMsg("Could not verify username availability. Try again.");
@@ -93,7 +90,6 @@ export default function LoginPage() {
       return setMsg(error.message);
     }
 
-    // Mirror into profiles (owner can update own row via RLS)
     try {
       const uid = data.user?.id;
       if (uid) {
@@ -109,11 +105,10 @@ export default function LoginPage() {
     } else {
       setMsg("Check your email to confirm your account, then sign in.");
       setMode("signin");
-      setIdentifier(email); // prefill for convenience
+      setIdentifier(email);
     }
   }
 
-  // ENTER submits the visible form (like ChatGPT)
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (busy) return;
@@ -123,8 +118,8 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      <div className={`w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Logo */}
+      <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
+        {/* Logo (2× size) */}
         <div className="flex justify-center mb-6">
           {logoOk ? (
             <Image
@@ -143,12 +138,8 @@ export default function LoginPage() {
           )}
         </div>
 
-        {/* Title */}
-        <h1 className="text-lg font-semibold text-center mb-4">
-          {mode === "signin" ? "Sign in" : "Create your account"}
-        </h1>
+        {/* (No visible heading) */}
 
-        {/* FORM: pressing Enter submits */}
         <form onSubmit={handleSubmit}>
           {mode === "signin" ? (
             <>
@@ -198,15 +189,10 @@ export default function LoginPage() {
 
           {msg && <div className="text-sm text-rose-400 mb-3">{msg}</div>}
 
-          <button
-            type="submit"
-            disabled={busy}
-            className="btn-pill btn-pill--active w-full justify-center"
-          >
+          <button type="submit" disabled={busy} className="btn-pill btn-pill--active w-full justify-center">
             {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
           </button>
 
-          {/* Bottom-only switch (no top buttons) */}
           <div className="text-center mt-4">
             {mode === "signin" ? (
               <button
@@ -227,9 +213,12 @@ export default function LoginPage() {
             )}
           </div>
         </form>
-
-        <p className="text-xs text-cx-muted mt-4 text-center">Accounts are secured by Supabase Auth.</p>
       </div>
+
+      {/* Bulletproof: hide any stray heading inside the card (if another file/layout injects it) */}
+      <style jsx global>{`
+        .login-card h1 { display: none !important; }
+      `}</style>
     </div>
   );
 }
