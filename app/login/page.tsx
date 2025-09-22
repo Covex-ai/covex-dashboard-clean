@@ -1,8 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useMemo, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
@@ -14,8 +14,6 @@ type Mode = "signin" | "signup";
 export default function LoginPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const router = useRouter();
-  const sp = useSearchParams();
-  const redirectTo = sp.get("redirect") || "/dashboard";
 
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
@@ -24,9 +22,20 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [logoOk, setLogoOk] = useState(true);
+  const [redirectTo, setRedirectTo] = useState("/dashboard"); // default
+
+  // Read ?redirect=... from the URL on the client (avoids useSearchParams/Suspense requirement)
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const r = sp.get("redirect");
+      if (r) setRedirectTo(r);
+    } catch {
+      /* noop */
+    }
+  }, []);
 
   function setGateCookie() {
-    // If your middleware expects a different cookie name, match it here
     document.cookie = "covex_session=1; Max-Age=2592000; Path=/; SameSite=Lax";
   }
 
@@ -53,7 +62,7 @@ export default function LoginPage() {
       return setMsg("Username must be at least 3 characters.");
     }
 
-    // 1) Create auth user and store username in user_metadata
+    // Create user and stash username in user_metadata for easy access
     const { data, error } = await supabase.auth.signUp({
       email,
       password: pw,
@@ -64,27 +73,21 @@ export default function LoginPage() {
       return setMsg(error.message);
     }
 
-    // 2) Optionally mirror username into public.profiles.username (see SQL below)
+    // Optional: mirror username into public.profiles.username (requires SQL policy from earlier)
     try {
       const uid = data.user?.id;
       if (uid) {
-        await supabase
-          .from("profiles")
-          .update({ username: username.trim() })
-          .eq("id", uid);
+        await supabase.from("profiles").update({ username: username.trim() }).eq("id", uid);
       }
     } catch {
-      // ignore; RLS/policy may block until SQL below is applied
+      /* ignore if policy not yet applied */
     }
 
     setBusy(false);
-
-    // 3) If you disabled email confirmations in Supabase → session exists now
     if (data.session) {
       setGateCookie();
       router.replace("/dashboard");
     } else {
-      // If confirmations enabled, they must confirm before first sign-in
       setMsg("Check your email to confirm your account, then sign in.");
       setMode("signin");
     }
@@ -171,9 +174,7 @@ export default function LoginPage() {
           {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
         </button>
 
-        <p className="text-xs text-cx-muted mt-4">
-          Accounts are secured by Supabase Auth.
-        </p>
+        <p className="text-xs text-cx-muted mt-4">Accounts are secured by Supabase Auth.</p>
       </div>
     </div>
   );
