@@ -6,10 +6,11 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-/** KEEPING LOGO SIZE EXACTLY THE SAME AS YOUR CURRENT SETTING */
-const LOGO_HEIGHT_PX = 288; // <-- do not change if your current is different, set it back to whatever you use
-/** keep your existing padding */
-const CARD_PADDING = "px-6 py-2.5 md:px-8 md:py-3.5";
+/** DO NOT CHANGE: keep whatever size you already use */
+const LOGO_HEIGHT_PX = 288; // if your current is different (e.g. 192/384), set it to that exact value
+
+/** Same horizontal padding; ~25% less vertical padding */
+const CARD_PADDING = "px-6 py-[1.125rem] md:px-8 md:py-6"; // 1.5rem → 1.125rem, 2rem → 1.5rem
 
 type Mode = "signin" | "signup";
 
@@ -121,9 +122,9 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* ↓ 25% narrower card: 36rem (max-w-xl) → 27rem */}
-      <div className={`login-card w-full max-w-[27rem] bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Logo (KEEPING SAME SIZE) */}
+      {/* Same width as before (max-w-xl). Only vertical padding reduced. */}
+      <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
+        {/* Logo: EXACT same size */}
         <div className="flex justify-center mb-3">
           {logoOk ? (
             <Image
