@@ -6,9 +6,9 @@ import { useRouter } from "next/navigation";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 const LOGO_SRC = "/brand-logo.png";
-/** 25% smaller than 384 → 288px */
-const LOGO_HEIGHT_PX = 288;
-/** cut vertical padding ~50% (was py-5/md:py-7 before) */
+/** KEEPING LOGO SIZE EXACTLY THE SAME AS YOUR CURRENT SETTING */
+const LOGO_HEIGHT_PX = 288; // <-- do not change if your current is different, set it back to whatever you use
+/** keep your existing padding */
 const CARD_PADDING = "px-6 py-2.5 md:px-8 md:py-3.5";
 
 type Mode = "signin" | "signup";
@@ -61,6 +61,7 @@ export default function LoginPage() {
   async function signUp() {
     setBusy(true);
     setMsg(null);
+
     if (!email.trim() || !pw.trim() || !username.trim()) {
       setBusy(false);
       return setMsg("Email, username, and password are required.");
@@ -69,7 +70,10 @@ export default function LoginPage() {
       setBusy(false);
       return setMsg("Username must be at least 3 characters.");
     }
-    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", { u: username.trim() });
+
+    const { data: ok, error: availErr } = await supabase.rpc("is_username_available", {
+      u: username.trim(),
+    });
     if (availErr) {
       setBusy(false);
       return setMsg("Could not verify username availability. Try again.");
@@ -78,6 +82,7 @@ export default function LoginPage() {
       setBusy(false);
       return setMsg("That username is taken. Please choose another.");
     }
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password: pw,
@@ -87,13 +92,16 @@ export default function LoginPage() {
       setBusy(false);
       return setMsg(error.message);
     }
+
     try {
       const uid = data.user?.id;
       if (uid) {
         await supabase.from("profiles").update({ username: username.trim(), email }).eq("id", uid);
       }
     } catch {}
+
     setBusy(false);
+
     if (data.session) {
       setGateCookie();
       router.replace("/dashboard");
@@ -113,9 +121,9 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* same width; vertical height reduced via padding & tighter spacing */}
-      <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Logo (288px tall) with tighter margin */}
+      {/* ↓ 25% narrower card: 36rem (max-w-xl) → 27rem */}
+      <div className={`login-card w-full max-w-[27rem] bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
+        {/* Logo (KEEPING SAME SIZE) */}
         <div className="flex justify-center mb-3">
           {logoOk ? (
             <Image
