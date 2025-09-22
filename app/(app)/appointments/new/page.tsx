@@ -19,28 +19,27 @@ type Slot = { iso: string };
 
 const US_COUNTRY = "+1";
 
-function tz() {
+const tz = () => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"; }
   catch { return "America/New_York"; }
-}
+};
 
-function extractISO(raw: RawSlot): string | null {
-  if (typeof raw === "string") return raw;
-  if (raw?.start) return raw.start;
-  if (raw?.startTime) return raw.startTime;
-  if (raw?.utcStart) return raw.utcStart;
-  if (raw?.time) return raw.time;
-  return null;
-}
-function toSlots(rawList: RawSlot[]): Slot[] {
+const msgOf = (e: any) => {
+  if (!e) return "Unknown error";
+  if (typeof e === "string") return e;
+  if (e.message) return e.message;
+  try { return JSON.stringify(e); } catch { return String(e); }
+};
+
+const toSlots = (rawList: RawSlot[]): Slot[] => {
   const out: Slot[] = [];
   for (const r of rawList ?? []) {
-    const iso = extractISO(r);
-    if (!iso) continue;
-    if (!Number.isNaN(Date.parse(iso))) out.push({ iso });
+    const iso =
+      typeof r === "string" ? r : r?.start || r?.startTime || r?.utcStart || r?.time || null;
+    if (iso && !Number.isNaN(Date.parse(iso))) out.push({ iso });
   }
   return out;
-}
+};
 
 export default function NewAppointmentPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
@@ -53,9 +52,7 @@ export default function NewAppointmentPage() {
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-
-  // Lock country code to +1 and collect exactly 10 digits
-  const [phoneLocal, setPhoneLocal] = useState(""); // digits only
+  const [phoneLocal, setPhoneLocal] = useState(""); // 10 digits only
   const phoneE164 = US_COUNTRY + phoneLocal;
 
   const [err, setErr] = useState<string | null>(null);
@@ -63,6 +60,7 @@ export default function NewAppointmentPage() {
 
   const currentService = services.find((s) => s.id === serviceId) || null;
 
+  // Load active services
   useEffect(() => {
     (async () => {
       const { data, error } = await supabase
@@ -71,13 +69,14 @@ export default function NewAppointmentPage() {
         .eq("active", true)
         .order("sort_order", { ascending: true })
         .order("id", { ascending: true });
-      if (!error && data) {
-        setServices(data as any);
-        if (data.length && !serviceId) setServiceId((data[0] as any).id);
-      }
+      if (error) { setErr(msgOf(error)); return; }
+      const list = (data as ServiceRow[]) || [];
+      setServices(list);
+      if (list.length && !serviceId) setServiceId(list[0].id);
     })();
   }, []);
 
+  // Pull availability whenever service or date changes
   useEffect(() => {
     setSlots([]);
     setSelectedISO(null);
@@ -93,16 +92,16 @@ export default function NewAppointmentPage() {
 
         const usp = new URLSearchParams({
           eventTypeId: String(currentService.event_type_id),
-          date: dayStr,
+          date: dayStr,                 // server route adds Z window for this date
           timeZone: tz(),
         });
+
         const res = await fetch(`/api/cal/availability?${usp.toString()}`);
         const json = await res.json();
-        if (!res.ok) throw new Error(json?.error || "Availability failed");
-
+        if (!res.ok) throw new Error(msgOf(json?.error || json));
         setSlots(toSlots(json?.slots ?? []));
-      } catch (e: any) {
-        setErr(e?.message ?? "Failed to load availability.");
+      } catch (e) {
+        setErr(msgOf(e));
       }
     })();
   }, [serviceId, date]);
@@ -116,30 +115,28 @@ export default function NewAppointmentPage() {
     }
     if (!selectedISO) return setErr("Please select a time.");
     if (!name.trim() || !email.trim()) return setErr("Name and email are required.");
-    if (phoneLocal.replace(/\D/g, "").length !== 10) {
-      return setErr("Enter a 10-digit US phone number.");
-    }
+    if (phoneLocal.replace(/\D/g, "").length !== 10) return setErr("Enter a 10-digit US phone number.");
 
     setBusy(true);
     try {
+      // 1) Book on Cal
       const payload = {
         eventTypeId: currentService.event_type_id,
         startISO: selectedISO,
         name: name.trim(),
         email: email.trim(),
         timeZone: tz(),
-        phone: phoneE164, // e.g. +11234567890
+        phone: phoneE164,
       };
-
       const r = await fetch("/api/cal/book", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       const j = await r.json();
-      if (!r.ok) throw new Error(j?.error?.message || j?.error || "Booking failed.");
+      if (!r.ok) throw new Error(msgOf(j?.error || j));
 
-      // Mirror to Supabase
+      // 2) Mirror to Supabase
       const { data: me } = await supabase.from("profiles").select("business_id").single();
       if (me?.business_id) {
         await supabase.from("appointments").insert({
@@ -161,15 +158,15 @@ export default function NewAppointmentPage() {
 
       alert("Appointment created ✅");
       setSelectedISO(null);
-    } catch (e: any) {
-      setErr(String(e?.message ?? e));
+    } catch (e) {
+      setErr(msgOf(e));
     } finally {
       setBusy(false);
     }
   }
 
-  // Calendar helpers
-  const days: Date[] = useMemo(() => {
+  // Simple month grid
+  const buildGrid = () => {
     const first = new Date(date.getFullYear(), date.getMonth(), 1);
     const start = new Date(first);
     start.setDate(1 - ((first.getDay() + 6) % 7)); // Monday grid
@@ -180,9 +177,10 @@ export default function NewAppointmentPage() {
       list.push(d);
     }
     return list;
-  }, [date]);
+  };
 
-  const isSameDay = (a: Date, b: Date) =>
+  const grid = buildGrid();
+  const sameDay = (a: Date, b: Date) =>
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate();
@@ -191,6 +189,7 @@ export default function NewAppointmentPage() {
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold">New Appointment</h1>
 
+      {/* Service */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="text-sm text-cx-muted mb-2">Service</div>
         <select
@@ -207,45 +206,25 @@ export default function NewAppointmentPage() {
         </select>
       </div>
 
+      {/* Calendar + Times */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="grid grid-cols-1 md:grid-cols-[1fr,320px] gap-6">
           {/* Calendar */}
           <div>
             <div className="flex items-center justify-between mb-3">
-              <button
-                className="btn-pill"
-                onClick={() => {
-                  const d = new Date(date);
-                  d.setMonth(d.getMonth() - 1);
-                  setDate(d);
-                }}
-              >
-                ←
-              </button>
-              <div className="font-semibold">
-                {date.toLocaleString(undefined, { month: "long", year: "numeric" })}
-              </div>
-              <button
-                className="btn-pill"
-                onClick={() => {
-                  const d = new Date(date);
-                  d.setMonth(d.getMonth() + 1);
-                  setDate(d);
-                }}
-              >
-                →
-              </button>
+              <button className="btn-pill" onClick={() => { const d = new Date(date); d.setMonth(d.getMonth() - 1); setDate(d); }}>←</button>
+              <div className="font-semibold">{date.toLocaleString(undefined, { month: "long", year: "numeric" })}</div>
+              <button className="btn-pill" onClick={() => { const d = new Date(date); d.setMonth(d.getMonth() + 1); setDate(d); }}>→</button>
             </div>
 
             <div className="grid grid-cols-7 gap-2 text-center text-sm text-cx-muted mb-2">
-              <div>Mon</div><div>Tue</div><div>Wed</div>
-              <div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+              <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
             </div>
 
             <div className="grid grid-cols-7 gap-2">
-              {days.map((d, i) => {
+              {grid.map((d, i) => {
                 const inMonth = d.getMonth() === date.getMonth();
-                const selected = isSameDay(d, date);
+                const selected = sameDay(d, date);
                 return (
                   <button
                     key={i}
