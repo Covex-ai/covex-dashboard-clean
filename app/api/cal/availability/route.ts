@@ -1,15 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
-type TryPlan = {
-  url: string;
-  method?: "GET" | "POST";
-  qs?: Record<string, string>;
-  body?: any;
-  pick: (j: any) => string[] | null;
-};
+type Attempt = { method: string; url: string; status: number; body: any };
 
-async function fetchJSON(input: string, init: RequestInit) {
-  const res = await fetch(input, init);
+async function jfetch(url: string, init: RequestInit) {
+  const res = await fetch(url, init);
   const ct = res.headers.get("content-type") || "";
   let body: any = null;
   try {
@@ -20,18 +14,14 @@ async function fetchJSON(input: string, init: RequestInit) {
   return { res, body };
 }
 
-function normalizeSlots(raw: any): string[] {
+function normSlots(raw: any): string[] {
+  const arr = Array.isArray(raw) ? raw : (raw?.data ?? raw?.slots ?? []);
   const out: string[] = [];
-  const arr = Array.isArray(raw) ? raw : [];
   for (const s of arr) {
     const iso =
       typeof s === "string"
         ? s
-        : s?.start ||
-          s?.startTime ||
-          s?.utcStart ||
-          s?.time ||
-          (s?.slot && (s.slot.start || s.slot.startTime || s.slot.utcStart));
+        : s?.start || s?.startTime || s?.utcStart || s?.time || s?.slot?.start || s?.slot?.startTime;
     if (iso && !Number.isNaN(Date.parse(iso))) out.push(iso);
   }
   return out;
@@ -49,77 +39,108 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "eventTypeId and date are required" }, { status: 400 });
   }
 
-  // Build day bounds in UTC
+  // Day bounds (UTC)
   const startISO = `${date}T00:00:00.000Z`;
-  const endISO = `${date}T23:59:59.999Z`;
+  const endISO   = `${date}T23:59:59.999Z`;
 
   const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+  const attempts: Attempt[] = [];
 
-  // We’ll try several endpoints Cal.com has used across versions/plans.
-  const tries: TryPlan[] = [
-    // Your original guess (some workspaces have it):
-    {
-      url: `https://api.cal.com/v2/event-types/${eventTypeId}/slots`,
+  // 1) Discover metadata for this Event Type (to get username / organization)
+  let username: string | null = null;
+  let organizationSlug: string | null = null;
+
+  {
+    const { res, body } = await jfetch(`https://api.cal.com/v2/event-types/${eventTypeId}`, {
       method: "GET",
-      qs: { start: startISO, end: endISO, timeZone },
-      pick: (j) => normalizeSlots(j?.data ?? j?.slots ?? j),
-    },
-    // Common v2 availability route (eventTypeId as query):
+      headers,
+      cache: "no-store",
+    });
+    attempts.push({ method: "GET", url: `https://api.cal.com/v2/event-types/${eventTypeId}`, status: res.status, body });
+    if (res.ok && body) {
+      // Cal commonly returns owner info under user/team/organization
+      username =
+        body?.data?.owner?.username ??
+        body?.data?.user?.username ??
+        body?.owner?.username ??
+        body?.user?.username ??
+        null;
+
+      organizationSlug =
+        body?.data?.organization?.slug ??
+        body?.data?.team?.slug ??
+        body?.organization?.slug ??
+        body?.team?.slug ??
+        null;
+    }
+  }
+
+  // 2) Try several known, versioned endpoints/shapes (GET & POST), progressively adding discovered params
+  const candidates = [
+    // v2 availability GET
     {
-      url: `https://api.cal.com/v2/availability/slots`,
       method: "GET",
+      url: "https://api.cal.com/v2/availability/slots",
       qs: { eventTypeId: String(eventTypeId), start: startISO, end: endISO, timeZone },
-      pick: (j) => normalizeSlots(j?.data ?? j?.slots ?? j),
     },
-    // Same route but with startTime/endTime param names:
+    // v2 availability GET with username
     {
-      url: `https://api.cal.com/v2/availability/slots`,
       method: "GET",
-      qs: { eventTypeId: String(eventTypeId), startTime: startISO, endTime: endISO, timeZone },
-      pick: (j) => normalizeSlots(j?.data ?? j?.slots ?? j),
+      url: "https://api.cal.com/v2/availability/slots",
+      qs: { eventTypeId: String(eventTypeId), start: startISO, end: endISO, timeZone, ...(username ? { username } : {}) },
     },
-    // Some tenants expose a POST shape:
+    // v2 availability GET with organization
     {
-      url: `https://api.cal.com/v2/availability/slots`,
-      method: "POST",
-      body: { eventTypeId: Number(eventTypeId), start: startISO, end: endISO, timeZone },
-      pick: (j) => normalizeSlots(j?.data ?? j?.slots ?? j),
+      method: "GET",
+      url: "https://api.cal.com/v2/availability/slots",
+      qs: { eventTypeId: String(eventTypeId), start: startISO, end: endISO, timeZone, ...(organizationSlug ? { organizationSlug } : {}) },
     },
-    // And with startTime/endTime in POST:
+    // v2 availability GET with startTime/endTime (some tenants require these names)
     {
-      url: `https://api.cal.com/v2/availability/slots`,
+      method: "GET",
+      url: "https://api.cal.com/v2/availability/slots",
+      qs: { eventTypeId: String(eventTypeId), startTime: startISO, endTime: endISO, timeZone, ...(username ? { username } : {}) , ...(organizationSlug ? { organizationSlug } : {}) },
+    },
+    // POST variants
+    {
       method: "POST",
-      body: { eventTypeId: Number(eventTypeId), startTime: startISO, endTime: endISO, timeZone },
-      pick: (j) => normalizeSlots(j?.data ?? j?.slots ?? j),
+      url: "https://api.cal.com/v2/availability/slots",
+      body: { eventTypeId: Number(eventTypeId), start: startISO, end: endISO, timeZone, ...(username ? { username } : {}), ...(organizationSlug ? { organizationSlug } : {}) },
+    },
+    {
+      method: "POST",
+      url: "https://api.cal.com/v2/availability/slots",
+      body: { eventTypeId: Number(eventTypeId), startTime: startISO, endTime: endISO, timeZone, ...(username ? { username } : {}), ...(organizationSlug ? { organizationSlug } : {}) },
+    },
+    // Some older tenants expose this:
+    {
+      method: "GET",
+      url: `https://api.cal.com/v2/event-types/${eventTypeId}/slots`,
+      qs: { start: startISO, end: endISO, timeZone },
     },
   ];
 
-  const attempts: Array<{ url: string; method: string; status: number; body: any }> = [];
-
-  for (const plan of tries) {
-    const qs = plan.qs
-      ? "?" + new URLSearchParams(plan.qs).toString()
-      : "";
+  for (const c of candidates) {
+    const qs = c.qs ? `?${new URLSearchParams(c.qs as Record<string,string>).toString()}` : "";
     const init: RequestInit = {
-      method: plan.method || "GET",
+      method: c.method,
       headers,
       cache: "no-store",
-      ...(plan.body ? { body: JSON.stringify(plan.body) } : {}),
+      ...(c.body ? { body: JSON.stringify(c.body) } : {}),
     };
-
-    const { res, body } = await fetchJSON(plan.url + qs, init);
-    attempts.push({ url: plan.url + qs, method: init.method!, status: res.status, body });
+    const { res, body } = await jfetch(c.url + qs, init);
+    attempts.push({ method: c.method, url: c.url + qs, status: res.status, body });
 
     if (res.ok) {
-      const slots = plan.pick(body) || [];
+      const slots = normSlots(body);
       return NextResponse.json({ slots });
     }
   }
 
-  // None worked — return a diagnostic so you can see what Cal.com returned.
   return NextResponse.json(
     {
-      error: "Cal.com availability failed; tried multiple endpoints.",
+      error: "Cal.com availability failed after discovery attempts.",
+      discovered: { username, organizationSlug },
       attempts: attempts.map((a) => ({
         method: a.method,
         url: a.url,
