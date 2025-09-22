@@ -1,55 +1,75 @@
+export const dynamic = "force-dynamic";
+
 import { NextRequest, NextResponse } from "next/server";
 
-const CAL_BASE = "https://api.cal.com/v2";
-
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}));
-  const {
-    eventTypeId, // number | string  (required unless using slug+username/teamSlug)
-    start,       // ISO string (UTC) – required
-    attendee,    // { name, email, timeZone?, phoneNumber? } – required fields: name, email
-    lengthInMinutes, // optional; Cal can infer from event type, but we pass if you provide it
-    // Optional: eventTypeSlug, username/teamSlug/orgSlug, metadata, guests, location, etc.
-    ...rest
-  } = body ?? {};
-
-  if (!eventTypeId || !start || !attendee?.name || !attendee?.email) {
-    return NextResponse.json(
-      { error: "Missing required fields: eventTypeId, start, attendee{name,email}" },
-      { status: 400 }
-    );
-  }
-
   try {
-    const res = await fetch(`${CAL_BASE}/bookings`, {
+    const body = await req.json();
+
+    const {
+      eventTypeId,      // number | string
+      start,            // ISO string (MUST be UTC, e.g. "2025-09-22T14:00:00Z")
+      timeZone,         // e.g. "America/New_York"
+      name,             // attendee name
+      email,            // attendee email (Cal.com requires an attendee object)
+      phoneNumber,      // E.164 if you have it
+      lengthInMinutes,  // optional override; otherwise Cal uses the event type length
+      metadata,         // optional object
+    } = body || {};
+
+    if (!process.env.CALCOM_API_KEY) {
+      return NextResponse.json({ error: "CALCOM_API_KEY missing" }, { status: 500 });
+    }
+    if (!eventTypeId || !start || !name || !email) {
+      return NextResponse.json(
+        { error: "Missing required fields: eventTypeId, start, name, email" },
+        { status: 400 }
+      );
+    }
+
+    const payload: any = {
+      start,                           // must be UTC
+      eventTypeId: Number(eventTypeId),
+      attendee: {
+        name,
+        email,
+        timeZone: timeZone ?? "America/New_York",
+        phoneNumber: phoneNumber ?? undefined,
+        language: "en",
+      },
+    };
+    if (lengthInMinutes) payload.lengthInMinutes = Number(lengthInMinutes);
+    if (metadata) payload.metadata = metadata;
+
+    const r = await fetch("https://api.cal.com/v2/bookings", {
       method: "POST",
       headers: {
+        Authorization: `Bearer ${process.env.CALCOM_API_KEY}`,
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.CALCOM_API_KEY ?? ""}`,
-        "cal-api-version":
-          process.env.CALCOM_API_VERSION_BOOKINGS ?? "2024-08-13",
+        "cal-api-version": "2024-08-13", // required for /v2/bookings
       },
-      body: JSON.stringify({
-        eventTypeId: Number(eventTypeId),
-        start, // must be UTC ISO, eg "2025-09-23T15:00:00Z"
-        attendee,
-        ...(lengthInMinutes ? { lengthInMinutes } : {}),
-        ...rest,
-      }),
+      body: JSON.stringify(payload),
+      cache: "no-store",
     });
 
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
+    const text = await r.text();
+    const json = text ? JSON.parse(text) : {};
+
+    if (!r.ok) {
       return NextResponse.json(
-        { error: data?.error ?? data, status: res.status },
+        {
+          status: r.status,
+          body: json,
+          hint:
+            "Confirm the start is UTC (Z suffix), eventTypeId is correct for this API key’s workspace, and cal-api-version=2024-08-13.",
+        },
         { status: 502 }
       );
     }
-    return NextResponse.json(data);
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: "Failed to create booking", detail: String(err) },
-      { status: 502 }
-    );
+
+    // Return the booking object { data: {...} }
+    return NextResponse.json(json);
+  } catch (e: any) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
