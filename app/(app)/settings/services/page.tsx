@@ -12,21 +12,38 @@ type ServiceRow = {
   slot_minutes: number | null;
   event_type_id: number | null;
   sort_order?: number | null;
+  // business_id exists in DB, we just don’t need to render it
 };
 
 export default function ServicesListPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
+  const [bizId, setBizId] = useState<string | null>(null);
   const [rows, setRows] = useState<ServiceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<number | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  /** Load my business_id from profiles (id = auth.uid()) */
+  async function loadBizId() {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("business_id")
+      .maybeSingle();
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
+    setBizId((data?.business_id as string) ?? null);
+  }
 
   async function load() {
+    if (!bizId) return;
     setLoading(true);
     const { data, error } = await supabase
       .from("services")
       .select("id,name,code,active,slot_minutes,event_type_id,sort_order")
+      .eq("business_id", bizId)
       .order("sort_order", { ascending: true, nullsFirst: true })
       .order("name", { ascending: true });
     if (error) setMsg(error.message);
@@ -35,16 +52,25 @@ export default function ServicesListPage() {
   }
 
   useEffect(() => {
+    loadBizId();
+  }, []);
+
+  useEffect(() => {
+    if (!bizId) return;
     load();
     const ch = supabase
       .channel("rt-services")
-      .on("postgres_changes", { event: "*", schema: "public", table: "services" }, () => load())
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "services", filter: `business_id=eq.${bizId}` },
+        () => load()
+      )
       .subscribe();
     return () => {
       void supabase.removeChannel(ch);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bizId]);
 
   async function savePatch(id: number, patch: Partial<ServiceRow>) {
     setSavingId(id);
@@ -53,8 +79,7 @@ export default function ServicesListPage() {
     setSavingId(null);
     if (error) {
       setMsg(error.message);
-      // reload to restore truth
-      load();
+      load(); // revert to server truth
     }
   }
 
@@ -67,27 +92,24 @@ export default function ServicesListPage() {
     const ok = confirm("Delete this service? This cannot be undone.");
     if (!ok) return;
     const { error } = await supabase.from("services").delete().eq("id", id);
-    if (error) {
-      setMsg(error.message);
-    } else {
-      setRows(prev => prev.filter(r => r.id !== id));
-    }
+    if (error) setMsg(error.message);
+    else setRows(prev => prev.filter(r => r.id !== id));
   }
 
   async function handleCreate() {
+    if (!bizId) {
+      setMsg("No business_id found. Try reloading the page.");
+      return;
+    }
     setCreating(true);
     setMsg(null);
-    // Minimal “new” row; you can tweak defaults if needed
     const { data, error } = await supabase
       .from("services")
-      .insert([{ name: "New service", active: true, slot_minutes: 60 }])
+      .insert([{ business_id: bizId, name: "New service", active: true, slot_minutes: 60 }])
       .select("id,name,code,active,slot_minutes,event_type_id,sort_order")
       .single();
     setCreating(false);
-    if (error) {
-      setMsg(error.message);
-      return;
-    }
+    if (error) setMsg(error.message);
     if (data) setRows(prev => [data as ServiceRow, ...prev]);
   }
 
@@ -99,7 +121,7 @@ export default function ServicesListPage() {
           <Link href="/settings" className="btn-pill">← Settings</Link>
           <h1 className="text-lg font-semibold">Services</h1>
         </div>
-        <button className="btn-pill btn-pill--active" onClick={handleCreate} disabled={creating}>
+        <button className="btn-pill btn-pill--active" onClick={handleCreate} disabled={!bizId || creating}>
           {creating ? "Creating…" : "+ New"}
         </button>
       </div>
@@ -108,7 +130,7 @@ export default function ServicesListPage() {
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <p className="text-sm text-cx-muted mb-4">
           Toggle <span className="text-white">Active</span>. Set <span className="text-white">Slot (min)</span> and Cal.com{" "}
-          <span className="text-white">Event Type ID</span>. Use **Delete** to remove a service.
+          <span className="text-white">Event Type ID</span>. Use <span className="text-white">Delete</span> to remove a service.
         </p>
 
         <div className="overflow-x-auto">
