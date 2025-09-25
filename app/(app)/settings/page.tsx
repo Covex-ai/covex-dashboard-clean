@@ -11,7 +11,7 @@ type Biz = {
   is_mobile: boolean;
 };
 
-const INDUSTRIES = [
+const INDUSTRIES: { value: string; label: string }[] = [
   { value: "plumbing", label: "Plumbing" },
   { value: "hvac", label: "HVAC" },
   { value: "barbers", label: "Barbers / Salon" },
@@ -63,7 +63,7 @@ export default function SettingsPage() {
     readBiz();
   }, []);
 
-  // realtime only for this row to avoid loops
+  // Realtime subscription for THIS business row only
   useEffect(() => {
     if (!biz?.id) return;
     const ch = supabase
@@ -74,7 +74,11 @@ export default function SettingsPage() {
         () => readBiz()
       )
       .subscribe();
-    return () => supabase.removeChannel(ch);
+
+    // IMPORTANT: do NOT return a Promise here. Swallow it.
+    return () => {
+      void supabase.removeChannel(ch); // ignore returned Promise
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [biz?.id]);
 
@@ -103,7 +107,7 @@ export default function SettingsPage() {
     return (
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 space-y-3">
         <div className="text-rose-400">No business found for this account.</div>
-        <div className="text-cx-muted text-sm">Click fix, then refresh.</div>
+        <div className="text-cx-muted text-sm">Click “Fix now”, then refresh.</div>
         <div className="flex gap-2">
           <button className="btn-pill btn-pill--active" onClick={readBiz}>Fix now</button>
           <button className="btn-pill" onClick={() => location.reload()}>Refresh</button>
@@ -115,15 +119,20 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Settings</h1>
-        <Link href="/settings/services" className="btn-pill btn-pill--active">Manage services →</Link>
+        <Link href="/settings/services" className="btn-pill btn-pill--active">
+          Manage services →
+        </Link>
       </div>
 
+      {/* Business card */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 space-y-4">
         <h2 className="font-semibold">Business</h2>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* ID */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Business ID</div>
             <div className="flex items-center gap-2">
@@ -136,6 +145,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* Visit type */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Visit type</div>
             <div className="flex items-center gap-2">
@@ -157,6 +167,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* Industry */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Industry / Niche</div>
             <select
@@ -167,7 +178,9 @@ export default function SettingsPage() {
             >
               <option value="" className="text-black bg-white">Select an industry…</option>
               {INDUSTRIES.map((i) => (
-                <option key={i.value} value={i.value} className="text-black bg-white">{i.label}</option>
+                <option key={i.value} value={i.value} className="text-black bg-white">
+                  {i.label}
+                </option>
               ))}
             </select>
           </div>
