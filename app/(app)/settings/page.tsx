@@ -7,42 +7,23 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 type Biz = {
   id: string;
   name: string | null;
-  industry: string | null;
   is_mobile: boolean;
 };
-
-const INDUSTRIES: { value: string; label: string }[] = [
-  { value: "plumbing", label: "Plumbing" },
-  { value: "hvac", label: "HVAC" },
-  { value: "barbers", label: "Barbers / Salon" },
-  { value: "dentistry", label: "Dentistry" },
-  { value: "chiropractic", label: "Chiropractic" },
-  { value: "electrician", label: "Electrician" },
-  { value: "cleaning", label: "House Cleaning" },
-  { value: "landscaping", label: "Landscaping / Lawn Care" },
-  { value: "pest_control", label: "Pest Control" },
-  { value: "auto_repair", label: "Auto Repair / Mechanic" },
-  { value: "handyman", label: "Handyman" },
-  { value: "photography", label: "Photography" },
-  { value: "massage", label: "Massage" },
-  { value: "tutoring", label: "Tutoring / Education" },
-  { value: "pet_grooming", label: "Pet Grooming" },
-  { value: "mobile_detailing", label: "Mobile Detailing" },
-  { value: "other", label: "Other" },
-];
 
 export default function SettingsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [biz, setBiz] = useState<Biz | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
+  /** Ensure profile + business row exists (safe to call repeatedly) */
   async function ensureBiz() {
     try {
       await supabase.rpc("ensure_profile_and_business");
     } catch (e: any) {
-      setMsg(e?.message ?? "Could not ensure business.");
+      // If this fails due to RLS or function missing, we'll still try to read below.
+      console.warn("ensure_profile_and_business:", e?.message);
     }
   }
 
@@ -52,7 +33,7 @@ export default function SettingsPage() {
     await ensureBiz();
     const { data, error } = await supabase
       .from("businesses")
-      .select("id,name,industry,is_mobile")
+      .select("id,name,is_mobile")
       .maybeSingle();
     if (error) setMsg(error.message);
     setBiz((data as Biz) ?? null);
@@ -63,7 +44,7 @@ export default function SettingsPage() {
     readBiz();
   }, []);
 
-  // Realtime subscription for THIS business row only
+  /** Realtime only for the current business row */
   useEffect(() => {
     if (!biz?.id) return;
     const ch = supabase
@@ -74,31 +55,36 @@ export default function SettingsPage() {
         () => readBiz()
       )
       .subscribe();
-
-    // IMPORTANT: do NOT return a Promise here. Swallow it.
+    // IMPORTANT: do not return a Promise from cleanup
     return () => {
-      void supabase.removeChannel(ch); // ignore returned Promise
+      void supabase.removeChannel(ch);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [biz?.id]);
 
-  async function patch(updates: Partial<Biz>) {
+  /** Toggle visit type with optimistic UI and clear error handling */
+  async function toggleVisitType() {
     if (!biz) return;
-    setSaving(true);
     setMsg(null);
-    const { data, error } = await supabase
+    const next = !biz.is_mobile;
+
+    // Optimistic update for snappy UI
+    setBiz({ ...biz, is_mobile: next });
+    setSaving(true);
+
+    const { error } = await supabase
       .from("businesses")
-      .update(updates)
-      .eq("id", biz.id)
-      .select("id,name,industry,is_mobile")
-      .single();
+      .update({ is_mobile: next })
+      .eq("id", biz.id);
+
     setSaving(false);
+
     if (error) {
-      setMsg(error.message);
-      await readBiz(); // restore server truth
-      return;
+      // Revert + show error
+      setBiz({ ...biz, is_mobile: !next });
+      setMsg(`Could not update visit type: ${error.message}`);
+      console.error("Visit type update error:", error);
     }
-    setBiz(data as Biz);
   }
 
   if (loading) return <div className="text-cx-muted">Loading…</div>;
@@ -132,7 +118,7 @@ export default function SettingsPage() {
         <h2 className="font-semibold">Business</h2>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* ID */}
+          {/* Business ID */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Business ID</div>
             <div className="flex items-center gap-2">
@@ -154,10 +140,11 @@ export default function SettingsPage() {
               </span>
               <button
                 className={`px-3 py-1.5 rounded-xl text-sm font-medium ${
-                  biz.is_mobile ? "bg-white/10 text-white" : "bg-white/5 text-cx-muted border border-cx-border"
+                  biz.is_mobile
+                    ? "bg-white/10 text-white"
+                    : "bg-white/5 text-cx-muted border border-cx-border"
                 }`}
-                onClick={() => patch({ is_mobile: !biz.is_mobile })}
-                disabled={saving}
+                onClick={toggleVisitType}
               >
                 {biz.is_mobile ? "On-site (ON)" : "On-site (OFF)"}
               </button>
@@ -165,25 +152,10 @@ export default function SettingsPage() {
             <div className="text-xs text-cx-muted mt-1">
               When ON, address fields show on New Appointment & tables.
             </div>
+            {saving && <div className="text-xs text-cx-muted mt-1">Saving…</div>}
           </div>
 
-          {/* Industry */}
-          <div>
-            <div className="text-sm text-cx-muted mb-1">Industry / Niche</div>
-            <select
-              value={biz.industry ?? ""}
-              onChange={(e) => patch({ industry: e.target.value || null })}
-              disabled={saving}
-              className="w-full px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none [color-scheme:dark]"
-            >
-              <option value="" className="text-black bg-white">Select an industry…</option>
-              {INDUSTRIES.map((i) => (
-                <option key={i.value} value={i.value} className="text-black bg-white">
-                  {i.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* (Industry/Niche removed as requested) */}
         </div>
 
         {msg && <div className="text-rose-400 text-sm">{msg}</div>}
