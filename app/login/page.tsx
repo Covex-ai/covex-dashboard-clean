@@ -9,11 +9,12 @@ const LOGO_SRC = "/brand-logo.png";
 /** DO NOT CHANGE: keep logo exactly the same size */
 const LOGO_HEIGHT_PX = 288;
 
-/** Reduce ONLY the VERTICAL padding by another ~25%.
- *  (Keep horizontal padding the same.)
- *  Prev: py-[1.125rem] / md:py-6  →  Now: py-[0.84375rem] / md:py-[1.125rem]
+/** Reduce ONLY the VERTICAL padding by another 50%.
+ *  (Keep horizontal padding the same and do not touch logo size.)
+ *  Prev: py-[0.84375rem] / md:py-[1.125rem]
+ *  Now:  py-[0.421875rem] / md:py-[0.5625rem]
  */
-const CARD_PADDING = "px-6 py-[0.84375rem] md:px-8 md:py-[1.125rem]";
+const CARD_PADDING = "px-6 py-[0.421875rem] md:px-8 md:py-[0.5625rem]";
 
 type Mode = "signin" | "signup";
 
