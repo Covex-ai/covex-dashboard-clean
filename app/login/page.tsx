@@ -9,7 +9,7 @@ const LOGO_SRC = "/brand-logo.png";
 /** DO NOT CHANGE: keep logo exactly the same size */
 const LOGO_HEIGHT_PX = 288;
 
-/** Zero vertical padding on the grey box; keep horizontal padding the same */
+/** Keep horizontal padding; zero vertical padding on the grey box */
 const CARD_PADDING = "px-6 md:px-8 py-0 md:py-0";
 
 type Mode = "signin" | "signup";
@@ -122,10 +122,10 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* Same width (max-w-xl). Vertical padding removed via CARD_PADDING. */}
+      {/* Same horizontal width (max-w-xl). Vertical padding is zero. */}
       <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
-        {/* Logo: EXACT same size; no extra bottom margin */}
-        <div className="flex justify-center mb-0">
+        {/* Logo: EXACT same size; no extra margins */}
+        <div className="flex justify-center">
           {logoOk ? (
             <Image
               src={LOGO_SRC}
@@ -145,13 +145,13 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} className="mt-0">
           {mode === "signin" ? (
-            <div className="md:grid md:grid-cols-2 md:gap-2">
-              {/* Labels are visually hidden to save vertical space */}
+            /* Two fields on a single row to save height */
+            <div className="grid grid-cols-2 gap-1 mt-1">
               <label className="sr-only" htmlFor="identifier">Email or username</label>
               <input
                 id="identifier"
                 aria-label="Email or username"
-                className="w-full mb-1 md:mb-0 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="px-3 py-1 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 placeholder="email@company.com or your-company"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
@@ -163,7 +163,7 @@ export default function LoginPage() {
               <input
                 id="password"
                 aria-label="Password"
-                className="w-full mb-1 md:mb-0 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="px-3 py-1 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 type="password"
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
@@ -172,12 +172,13 @@ export default function LoginPage() {
               />
             </div>
           ) : (
-            <div className="md:grid md:grid-cols-3 md:gap-2">
+            /* Three fields on a single row (tight) */
+            <div className="grid grid-cols-3 gap-1 mt-1">
               <label className="sr-only" htmlFor="username">Company username</label>
               <input
                 id="username"
                 aria-label="Company username"
-                className="w-full mb-1 md:mb-0 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="px-3 py-1 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 placeholder="your-company"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -189,7 +190,7 @@ export default function LoginPage() {
               <input
                 id="email"
                 aria-label="Email"
-                className="w-full mb-1 md:mb-0 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="px-3 py-1 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -201,7 +202,7 @@ export default function LoginPage() {
               <input
                 id="newpassword"
                 aria-label="Password"
-                className="w-full mb-1 md:mb-0 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                className="px-3 py-1 rounded-xl bg-cx-bg border border-cx-border outline-none"
                 type="password"
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
@@ -211,16 +212,17 @@ export default function LoginPage() {
             </div>
           )}
 
-          {msg && <div className="text-sm text-rose-400 mt-1 mb-1">{msg}</div>}
+          {msg && <div className="text-[12px] text-rose-400 mt-1 mb-1">{msg}</div>}
 
-          <div className="flex items-center gap-3 mt-1">
+          {/* Button + mode switch kept on one line to avoid extra vertical space */}
+          <div className="flex items-center gap-2 mt-1">
             <button type="submit" disabled={busy} className="btn-pill btn-pill--active flex-1 justify-center">
               {busy ? (mode === "signin" ? "Signing in…" : "Creating account…") : (mode === "signin" ? "Sign in" : "Sign up")}
             </button>
 
             <button
               type="button"
-              className="text-xs text-cx-muted hover:text-white underline underline-offset-4 whitespace-nowrap"
+              className="text-[11px] text-cx-muted hover:text-white underline underline-offset-4 whitespace-nowrap"
               onClick={() => { setMsg(null); setMode(mode === "signin" ? "signup" : "signin"); }}
             >
               {mode === "signin" ? "Sign up" : "Sign in"}
