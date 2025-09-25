@@ -9,12 +9,10 @@ const LOGO_SRC = "/brand-logo.png";
 /** DO NOT CHANGE: keep logo exactly the same size */
 const LOGO_HEIGHT_PX = 288;
 
-/** Reduce ONLY the VERTICAL padding by another 50%.
- *  (Keep horizontal padding the same and do not touch logo size.)
- *  Prev: py-[0.84375rem] / md:py-[1.125rem]
- *  Now:  py-[0.421875rem] / md:py-[0.5625rem]
+/** Reduce ONLY the VERTICAL padding to the minimum (effectively a 100%+ cut → clamped at 0).
+ *  Horizontal width stays the same (max-w-xl) and logo size is untouched.
  */
-const CARD_PADDING = "px-6 py-[0.421875rem] md:px-8 md:py-[0.5625rem]";
+const CARD_PADDING = "px-6 py-0 md:px-8 md:py-0";
 
 type Mode = "signin" | "signup";
 
@@ -126,10 +124,10 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid place-items-center bg-cx-bg text-cx-text px-6">
-      {/* Same horizontal width (max-w-xl). Only vertical padding reduced again. */}
+      {/* Same horizontal width (max-w-xl). Vertical padding is now zero. */}
       <div className={`login-card w-full max-w-xl bg-cx-surface border border-cx-border rounded-2xl ${CARD_PADDING}`}>
         {/* Logo: EXACT same size */}
-        <div className="flex justify-center mb-3">
+        <div className="flex justify-center mb-2">
           {logoOk ? (
             <Image
               src={LOGO_SRC}
