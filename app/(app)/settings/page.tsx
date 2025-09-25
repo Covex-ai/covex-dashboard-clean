@@ -12,7 +12,6 @@ type Biz = {
 };
 
 const INDUSTRIES: { value: string; label: string }[] = [
-  // Most popular first
   { value: "plumbing", label: "Plumbing" },
   { value: "hvac", label: "HVAC" },
   { value: "barbers", label: "Barbers / Salon" },
@@ -29,7 +28,6 @@ const INDUSTRIES: { value: string; label: string }[] = [
   { value: "tutoring", label: "Tutoring / Education" },
   { value: "pet_grooming", label: "Pet Grooming" },
   { value: "mobile_detailing", label: "Mobile Detailing" },
-  // Catch-all
   { value: "other", label: "Other" },
 ];
 
@@ -38,29 +36,27 @@ export default function SettingsPage() {
   const [biz, setBiz] = useState<Biz | null>(null);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
-  const [seeding, setSeeding] = useState(false);
   const [healing, setHealing] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   async function ensureBiz() {
     setHealing(true);
     try {
-      // Idempotent: creates profile.business_id and businesses row if missing
+      // Safe to call repeatedly; creates profile+business if missing.
       await supabase.rpc("ensure_profile_and_business");
-    } catch {
-      // ignore; read will still run
+    } catch (e: any) {
+      // Surface any DB error so you can see it
+      setMsg(e?.message ?? "Could not ensure business.");
     } finally {
       setHealing(false);
     }
   }
 
-  async function load() {
+  async function readBiz() {
     setLoading(true);
     setMsg(null);
-
-    // self-heal first (fixes brand new accounts)
     await ensureBiz();
 
-    // read the business row under RLS; don't throw on 0 rows
     const { data, error } = await supabase
       .from("businesses")
       .select("id,name,industry,is_mobile")
@@ -72,85 +68,63 @@ export default function SettingsPage() {
     } else {
       setBiz((data as Biz) ?? null);
     }
-
     setLoading(false);
   }
 
   useEffect(() => {
-    load();
+    readBiz();
+  }, []);
 
-    // Realtime for businesses (keeps UI fresh)
+  // Realtime scoped to THIS business row only (prevents “tweaking out”)
+  useEffect(() => {
+    if (!biz?.id) return;
     const ch = supabase
       .channel("rt-businesses")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "businesses" },
-        () => load()
+        { event: "*", schema: "public", table: "businesses", filter: `id=eq.${biz.id}` },
+        () => readBiz()
       )
       .subscribe();
-
     return () => {
       supabase.removeChannel(ch);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [biz?.id]);
 
   async function patch(updates: Partial<Biz>) {
     if (!biz) return;
+    setSaving(true);
     setMsg(null);
-    const { error } = await supabase
+
+    const { data, error } = await supabase
       .from("businesses")
       .update(updates)
-      .eq("id", biz.id);
+      .eq("id", biz.id)
+      // force returning row under RLS so local state matches DB truth
+      .select("id,name,industry,is_mobile")
+      .single();
+
+    setSaving(false);
+
     if (error) {
       setMsg(error.message);
-      await load(); // revert local state on error
-    } else {
-      setBiz({ ...biz, ...updates });
-    }
-  }
-
-  async function seedServices() {
-    if (!biz) return;
-    if (!biz.industry) {
-      setMsg("Pick an industry first.");
+      // don’t blindly merge optimistic state; re-read server truth
+      await readBiz();
       return;
     }
-    setSeeding(true);
-    setMsg(null);
-    const { error } = await supabase.rpc("seed_services_for_business_id", {
-      p_business: biz.id,
-      p_industry: biz.industry,
-    });
-    setSeeding(false);
-    if (error) {
-      setMsg(error.message);
-      return;
-    }
-    setMsg("Seeded default services for your industry. You can adjust them in the Services list.");
+    if (data) setBiz(data as Biz);
   }
 
-  if (loading) {
-    return <div className="text-cx-muted">Loading…</div>;
-  }
+  if (loading) return <div className="text-cx-muted">Loading…</div>;
 
-  // If still no row, show a small in-theme fix action (no redesign)
   if (!biz) {
     return (
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 space-y-3">
         <div className="text-rose-400">No business found for this account.</div>
-        <div className="text-cx-muted text-sm">
-          Click fix, then refresh. If it persists, run the backfill SQL once.
-        </div>
+        <div className="text-cx-muted text-sm">Click fix, then refresh.</div>
         <div className="flex gap-2">
-          <button
-            className="btn-pill btn-pill--active"
-            onClick={async () => {
-              await ensureBiz();
-              await load();
-            }}
-            disabled={healing}
-          >
+          <button className="btn-pill btn-pill--active" onClick={readBiz} disabled={healing}>
             {healing ? "Fixing…" : "Fix now"}
           </button>
           <button className="btn-pill" onClick={() => location.reload()}>Refresh</button>
@@ -165,34 +139,28 @@ export default function SettingsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Settings</h1>
-        {/* Link to Services list subpage */}
-        <Link href="/settings/services" className="btn-pill btn-pill--active">
-          Manage services →
-        </Link>
+        <Link href="/settings/services" className="btn-pill btn-pill--active">Manage services →</Link>
       </div>
 
       {/* Business card */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 space-y-4">
         <h2 className="font-semibold">Business</h2>
 
-        {/* Business ID */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Business ID */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Business ID</div>
             <div className="flex items-center gap-2">
               <code className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border text-xs break-all">
                 {biz.id}
               </code>
-              <button
-                className="btn-pill"
-                onClick={() => navigator.clipboard.writeText(biz.id)}
-              >
+              <button className="btn-pill" onClick={() => navigator.clipboard.writeText(biz.id)}>
                 Copy
               </button>
             </div>
           </div>
 
-          {/* We go to the customer (mobile) */}
+          {/* Visit type */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Visit type</div>
             <div className="flex items-center gap-2">
@@ -201,11 +169,10 @@ export default function SettingsPage() {
               </span>
               <button
                 className={`px-3 py-1.5 rounded-xl text-sm font-medium ${
-                  biz.is_mobile
-                    ? "bg-white/10 text-white"
-                    : "bg-white/5 text-cx-muted border border-cx-border"
+                  biz.is_mobile ? "bg-white/10 text-white" : "bg-white/5 text-cx-muted border border-cx-border"
                 }`}
                 onClick={() => patch({ is_mobile: !biz.is_mobile })}
+                disabled={saving}
               >
                 {biz.is_mobile ? "On-site (ON)" : "On-site (OFF)"}
               </button>
@@ -215,46 +182,32 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Industry / niche */}
+          {/* Industry */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Industry / Niche</div>
             <select
               value={biz.industry ?? ""}
               onChange={(e) => patch({ industry: e.target.value || null })}
+              disabled={saving}
               className="w-full px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none [color-scheme:dark]"
             >
-              <option value="" className="text-black bg-white">
-                Select an industry…
-              </option>
+              <option value="" className="text-black bg-white">Select an industry…</option>
               {INDUSTRIES.map((i) => (
                 <option key={i.value} value={i.value} className="text-black bg-white">
                   {i.label}
                 </option>
               ))}
             </select>
-            <div className="text-xs text-cx-muted mt-1">
-              This helps seed the right default services.
-            </div>
           </div>
-        </div>
-
-        {/* Seed services */}
-        <div className="pt-2">
-          <button
-            onClick={seedServices}
-            disabled={seeding}
-            className="btn-pill btn-pill--active"
-          >
-            {seeding ? "Seeding…" : "Seed default services for this industry"}
-          </button>
         </div>
 
         {msg && <div className="text-rose-400 text-sm">{msg}</div>}
       </div>
 
-      {/* Tip */}
+      {/* (Removed) Seed services section – per your request */}
+
       <div className="text-xs text-cx-muted">
-        Need to edit individual services (price, duration, Cal Event Type)? Use{" "}
+        To edit services (active, slot length, event type), open{" "}
         <Link href="/settings/services" className="underline">Services</Link>.
       </div>
     </div>
