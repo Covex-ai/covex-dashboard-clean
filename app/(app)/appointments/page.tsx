@@ -46,7 +46,7 @@ function tomorrowStartISO() {
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [view, setView] = useState<View>("today");      // DEFAULT = Today
-  const [range, setRange] = useState<Range>("7d");      // for list ranges
+  const [range, setRange] = useState<Range>("7d");      // list window for "All"
   const [statusFilter, setStatusFilter] = useState<StatusOpt>("All");
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
@@ -63,7 +63,7 @@ export default function AppointmentsPage() {
     } else if (view === "future") {
       query = query.gte("start_ts", tomorrowStartISO());
     } else {
-      // all (bounded by range)
+      // "all" — bound by range
       const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
       query = query.gte("start_ts", daysAgoISO(days));
     }
@@ -74,7 +74,10 @@ export default function AppointmentsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [view, range, statusFilter, q]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, range, statusFilter, q]);
 
   // realtime refresh
   useEffect(() => {
@@ -82,21 +85,28 @@ export default function AppointmentsPage() {
       .channel("rt-appointments")
       .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => load())
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+    return () => {
+      supabase.removeChannel(ch);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // client filters
-  const filtered = rows.filter(r => {
-    // status filter
+  const filtered = rows.filter((r) => {
     if (statusFilter !== "All" && r.status !== statusFilter) return false;
-    // search
     if (q.trim()) {
-      const hay =
-        `${r.caller_name ?? ""} ${r.caller_phone_e164 ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
+      const hay = `${r.caller_name ?? ""} ${r.caller_phone_e164 ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
       if (!hay.includes(q.trim().toLowerCase())) return false;
     }
     return true;
   });
+
+  // styling helpers so only ONE group looks active
+  const rangeEnabled = view === "all";
+  const rangeBtnClass = (r: Range) =>
+    `btn-pill ${rangeEnabled && range === r ? "btn-pill--active" : ""} ${
+      !rangeEnabled ? "opacity-50 cursor-not-allowed" : ""
+    }`;
 
   return (
     <div className="space-y-4">
@@ -125,25 +135,31 @@ export default function AppointmentsPage() {
             All
           </button>
 
-          {/* Range pills only really matter for "All" view, but keep visible for convenience */}
+          {/* Range pills only “active” when view === 'all' */}
           <button
             type="button"
-            className={`btn-pill ${range === "7d" ? "btn-pill--active" : ""}`}
-            onClick={() => setRange("7d")}
+            className={rangeBtnClass("7d")}
+            onClick={() => rangeEnabled && setRange("7d")}
+            aria-disabled={!rangeEnabled}
+            title={rangeEnabled ? "Show last 7 days" : "Switch to All to use ranges"}
           >
             7d
           </button>
           <button
             type="button"
-            className={`btn-pill ${range === "30d" ? "btn-pill--active" : ""}`}
-            onClick={() => setRange("30d")}
+            className={rangeBtnClass("30d")}
+            onClick={() => rangeEnabled && setRange("30d")}
+            aria-disabled={!rangeEnabled}
+            title={rangeEnabled ? "Show last 30 days" : "Switch to All to use ranges"}
           >
             30d
           </button>
           <button
             type="button"
-            className={`btn-pill ${range === "90d" ? "btn-pill--active" : ""}`}
-            onClick={() => setRange("90d")}
+            className={rangeBtnClass("90d")}
+            onClick={() => rangeEnabled && setRange("90d")}
+            aria-disabled={!rangeEnabled}
+            title={rangeEnabled ? "Show last 90 days" : "Switch to All to use ranges"}
           >
             90d
           </button>
@@ -156,8 +172,10 @@ export default function AppointmentsPage() {
             onChange={(e) => setStatusFilter(e.target.value as StatusOpt)}
             className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none [color-scheme:dark]"
           >
-            {["All","Booked","Rescheduled","Cancelled","Completed"].map(s => (
-              <option key={s} value={s} className="text-black bg-white">{s}</option>
+            {["All", "Booked", "Rescheduled", "Cancelled", "Completed"].map((s) => (
+              <option key={s} value={s} className="text-black bg-white">
+                {s}
+              </option>
             ))}
           </select>
 
@@ -168,7 +186,6 @@ export default function AppointmentsPage() {
             className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none w-64"
           />
 
-          {/* The NEW button you needed */}
           <Link href="/appointments/new" className="btn-pill btn-pill--active">
             + New
           </Link>
