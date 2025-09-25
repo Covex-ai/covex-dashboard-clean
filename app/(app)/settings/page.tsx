@@ -11,7 +11,7 @@ type Biz = {
   is_mobile: boolean;
 };
 
-const INDUSTRIES: { value: string; label: string }[] = [
+const INDUSTRIES = [
   { value: "plumbing", label: "Plumbing" },
   { value: "hvac", label: "HVAC" },
   { value: "barbers", label: "Barbers / Salon" },
@@ -35,20 +35,14 @@ export default function SettingsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [biz, setBiz] = useState<Biz | null>(null);
   const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [healing, setHealing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
   async function ensureBiz() {
-    setHealing(true);
     try {
-      // Safe to call repeatedly; creates profile+business if missing.
       await supabase.rpc("ensure_profile_and_business");
     } catch (e: any) {
-      // Surface any DB error so you can see it
       setMsg(e?.message ?? "Could not ensure business.");
-    } finally {
-      setHealing(false);
     }
   }
 
@@ -56,18 +50,12 @@ export default function SettingsPage() {
     setLoading(true);
     setMsg(null);
     await ensureBiz();
-
     const { data, error } = await supabase
       .from("businesses")
       .select("id,name,industry,is_mobile")
       .maybeSingle();
-
-    if (error) {
-      setMsg(error.message);
-      setBiz(null);
-    } else {
-      setBiz((data as Biz) ?? null);
-    }
+    if (error) setMsg(error.message);
+    setBiz((data as Biz) ?? null);
     setLoading(false);
   }
 
@@ -75,7 +63,7 @@ export default function SettingsPage() {
     readBiz();
   }, []);
 
-  // Realtime scoped to THIS business row only (prevents “tweaking out”)
+  // realtime only for this row to avoid loops
   useEffect(() => {
     if (!biz?.id) return;
     const ch = supabase
@@ -86,9 +74,7 @@ export default function SettingsPage() {
         () => readBiz()
       )
       .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
+    return () => supabase.removeChannel(ch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [biz?.id]);
 
@@ -96,24 +82,19 @@ export default function SettingsPage() {
     if (!biz) return;
     setSaving(true);
     setMsg(null);
-
     const { data, error } = await supabase
       .from("businesses")
       .update(updates)
       .eq("id", biz.id)
-      // force returning row under RLS so local state matches DB truth
       .select("id,name,industry,is_mobile")
       .single();
-
     setSaving(false);
-
     if (error) {
       setMsg(error.message);
-      // don’t blindly merge optimistic state; re-read server truth
-      await readBiz();
+      await readBiz(); // restore server truth
       return;
     }
-    if (data) setBiz(data as Biz);
+    setBiz(data as Biz);
   }
 
   if (loading) return <div className="text-cx-muted">Loading…</div>;
@@ -124,9 +105,7 @@ export default function SettingsPage() {
         <div className="text-rose-400">No business found for this account.</div>
         <div className="text-cx-muted text-sm">Click fix, then refresh.</div>
         <div className="flex gap-2">
-          <button className="btn-pill btn-pill--active" onClick={readBiz} disabled={healing}>
-            {healing ? "Fixing…" : "Fix now"}
-          </button>
+          <button className="btn-pill btn-pill--active" onClick={readBiz}>Fix now</button>
           <button className="btn-pill" onClick={() => location.reload()}>Refresh</button>
         </div>
         {msg && <div className="text-rose-400 text-sm">{msg}</div>}
@@ -136,18 +115,15 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Settings</h1>
         <Link href="/settings/services" className="btn-pill btn-pill--active">Manage services →</Link>
       </div>
 
-      {/* Business card */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4 space-y-4">
         <h2 className="font-semibold">Business</h2>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Business ID */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Business ID</div>
             <div className="flex items-center gap-2">
@@ -160,7 +136,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Visit type */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Visit type</div>
             <div className="flex items-center gap-2">
@@ -182,7 +157,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Industry */}
           <div>
             <div className="text-sm text-cx-muted mb-1">Industry / Niche</div>
             <select
@@ -193,22 +167,13 @@ export default function SettingsPage() {
             >
               <option value="" className="text-black bg-white">Select an industry…</option>
               {INDUSTRIES.map((i) => (
-                <option key={i.value} value={i.value} className="text-black bg-white">
-                  {i.label}
-                </option>
+                <option key={i.value} value={i.value} className="text-black bg-white">{i.label}</option>
               ))}
             </select>
           </div>
         </div>
 
         {msg && <div className="text-rose-400 text-sm">{msg}</div>}
-      </div>
-
-      {/* (Removed) Seed services section – per your request */}
-
-      <div className="text-xs text-cx-muted">
-        To edit services (active, slot length, event type), open{" "}
-        <Link href="/settings/services" className="underline">Services</Link>.
       </div>
     </div>
   );
