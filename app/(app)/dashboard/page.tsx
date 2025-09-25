@@ -2,12 +2,25 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer, BarChart, Bar } from "recharts";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
+  ResponsiveContainer, BarChart, Bar
+} from "recharts";
 import RangePills from "@/components/RangePills";
+
+// 👇 import the SAME helpers your Services page uses
+import {
+  normalizeService,
+  priceFor as priceForFromNs,
+  serviceLabelFor,
+  type NormalizedService,
+} from "@/lib/pricing";
 
 // Utilities
 function fmtUSD(n: number) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency: "USD", maximumFractionDigits: 0
+  }).format(n || 0);
 }
 function toNumber(x: unknown, fallback = 0): number {
   const n = Number(x);
@@ -22,7 +35,7 @@ type ApptRow = {
   end_ts: string | null;
   status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | string | null;
   service_raw: string | null;
-  normalized_service: string | null;
+  normalized_service: NormalizedService | null; // 👈 typed like Services page
   price_usd: number | string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
@@ -43,10 +56,9 @@ export default function DashboardPage() {
   const [rows, setRows] = useState<ApptRow[]>([]);
   const [services, setServices] = useState<ServiceRow[]>([]);
 
-  // Map for fast lookups
   const svcById = useMemo(() => {
     const m = new Map<number, ServiceRow>();
-    services.forEach(s => m.set(s.id, s));
+    services.forEach((s) => m.set(s.id, s));
     return m;
   }, [services]);
 
@@ -62,7 +74,9 @@ export default function DashboardPage() {
     const [{ data: appts }, { data: svcs }] = await Promise.all([
       supabase
         .from("appointments")
-        .select("id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text")
+        .select(
+          "id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text"
+        )
         .gte("start_ts", from.toISOString())
         .order("start_ts", { ascending: true }),
       supabase
@@ -79,7 +93,6 @@ export default function DashboardPage() {
 
   useEffect(() => { load(); }, [range]);
 
-  // realtime subscription
   useEffect(() => {
     const ch = supabase
       .channel("rt-appointments")
@@ -88,17 +101,25 @@ export default function DashboardPage() {
     return () => { supabase.removeChannel(ch); };
   }, []);
 
-  // Revenue helper: prefer service_id -> default_price_usd; fallback to price_usd
-  function priceFor(row: ApptRow): number {
-    if (row.status === "Cancelled") return 0; // excluded from revenue
+  // ✅ Unified pricing logic (matches Services page behavior)
+  function priceForRow(row: ApptRow): number {
+    if ((row.status ?? "").toLowerCase() === "cancelled") return 0;
+
+    // 1) if there's an explicit price, use it
+    const explicit = toNumber(row.price_usd, NaN);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+
+    // 2) prefer service default via service_id
     if (row.service_id != null) {
       const svc = svcById.get(row.service_id);
       if (svc) return toNumber(svc.default_price_usd, 0);
     }
-    return toNumber(row.price_usd, 0);
+
+    // 3) fallback to normalized_service mapping (same as Services page)
+    const ns = row.normalized_service ?? normalizeService(row.service_raw);
+    return priceForFromNs(ns, toNumber(row.price_usd, 0));
   }
 
-  // Name/phone helpers (your actual schema)
   function personName(r: ApptRow) {
     return r.caller_name ?? "—";
   }
@@ -108,12 +129,12 @@ export default function DashboardPage() {
 
   // Totals
   const totals = useMemo(() => {
-    const revenue = rows.reduce((sum, r) => sum + priceFor(r), 0);
+    const revenue = rows.reduce((sum, r) => sum + priceForRow(r), 0);
     return {
       bookings: rows.length,
       revenue,
-      rescheduled: rows.filter(r => (r.status || "").toLowerCase() === "rescheduled").length,
-      cancelled: rows.filter(r => (r.status || "").toLowerCase() === "cancelled").length,
+      rescheduled: rows.filter((r) => (r.status || "").toLowerCase() === "rescheduled").length,
+      cancelled: rows.filter((r) => (r.status || "").toLowerCase() === "cancelled").length,
     };
   }, [rows, svcById]);
 
@@ -135,24 +156,26 @@ export default function DashboardPage() {
     return Array.from(map.entries()).map(([date, count]) => ({ date, count }));
   }, [rows, range]);
 
-  // Revenue by service (prefer service_id->name, else fallback to normalized/service_raw)
+  // ✅ Revenue by service now uses the same labeling & pricing fallbacks
   const revenueByService = useMemo(() => {
-    const sums = new Map<string, number>(); // key = label
+    const sums = new Map<string, number>();
     for (const r of rows) {
       if ((r.status || "").toLowerCase() === "cancelled") continue;
+
+      const ns = r.normalized_service ?? normalizeService(r.service_raw);
       let label: string;
       if (r.service_id != null) {
         const svc = svcById.get(r.service_id);
-        label = svc?.name || "Other";
+        label = svc?.name || serviceLabelFor(ns, r.service_raw) || "Other";
       } else {
-        label = r.normalized_service || r.service_raw || "Other";
+        label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Other";
       }
-      sums.set(label, (sums.get(label) ?? 0) + priceFor(r));
+
+      sums.set(label, (sums.get(label) ?? 0) + priceForRow(r));
     }
     return Array.from(sums.entries()).map(([service, revenue]) => ({ service, revenue }));
   }, [rows, svcById]);
 
-  // Status chip
   function StatusPill({ s }: { s: string | null }) {
     const v = (s ?? "").toLowerCase();
     const base = "px-2 py-1 rounded-lg text-xs font-medium border border-cx-border";
@@ -202,7 +225,7 @@ export default function DashboardPage() {
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={revenueByService}>
                 <CartesianGrid vertical={false} stroke="#1a1a1a" />
-                <XAxis dataKey="service" interval={0} angle={0} tickMargin={12} />
+                <XAxis dataKey="service" interval={0} tickMargin={12} />
                 <YAxis width={40} />
                 <Tooltip formatter={(v: any) => [fmtUSD(Number(v)), ""]} />
                 <Bar dataKey="revenue" fill="#ffffff" radius={[8, 8, 0, 0]} />
@@ -212,7 +235,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Recent table (now uses caller_* fields + status chips) */}
+      {/* Recent appointments */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold">Recent appointments</h3>
@@ -237,11 +260,14 @@ export default function DashboardPage() {
                 const date = d.toLocaleDateString();
                 const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
-                // Prefer service name via service_id
-                let svcLabel = r.service_raw || r.normalized_service || "Service";
+                // Prefer service name via service_id; fallback to normalized/service_raw
+                let svcLabel = r.service_raw || (r.normalized_service as string) || "Service";
                 if (r.service_id != null) {
                   const svc = svcById.get(r.service_id);
                   if (svc?.name) svcLabel = svc.name;
+                } else {
+                  const ns = r.normalized_service ?? normalizeService(r.service_raw);
+                  svcLabel = serviceLabelFor(ns, r.service_raw) || svcLabel;
                 }
 
                 return (
@@ -252,7 +278,7 @@ export default function DashboardPage() {
                     <td className="py-2 pr-4">{personName(r)}</td>
                     <td className="py-2 pr-4">{personPhone(r)}</td>
                     <td className="py-2 pr-4"><StatusPill s={r.status} /></td>
-                    <td className="py-2 pr-4">{fmtUSD(priceFor(r))}</td>
+                    <td className="py-2 pr-4">{fmtUSD(priceForRow(r))}</td>
                   </tr>
                 );
               })}
