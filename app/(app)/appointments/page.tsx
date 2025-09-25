@@ -3,8 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
-import { fmtUSD, normalizeService, priceFor, serviceLabelFor, toNumber, type NormalizedService } from "@/lib/pricing";
+import {
+  normalizeService,
+  priceFor as priceForFromNs,
+  serviceLabelFor,
+} from "@/lib/pricing";
 
+/* ------------------------- types ------------------------- */
 type View = "today" | "future" | "all";
 type Range = "7d" | "30d" | "90d";
 type StatusOpt = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed";
@@ -15,83 +20,153 @@ type Row = {
   end_ts: string | null;
   status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | null;
   service_raw: string | null;
-  normalized_service: NormalizedService | null;
+  normalized_service: string | null;
   price_usd: number | string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
+  service_id: number | null; // <- needed to pull default price/name
 };
 
-function startOfTodayISO() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+type ServiceRow = {
+  id: number;
+  name: string;
+  code: string | null;
+  default_price_usd: number | string;
+};
+
+/* ----------------------- helpers ------------------------- */
+function fmtUSD(n: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(n || 0);
 }
-function endOfTodayISO() {
-  const d = new Date();
-  d.setHours(23, 59, 59, 999);
-  return d.toISOString();
+function toNumber(x: unknown, fallback = 0): number {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
 }
-function daysAgoISO(n: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString();
+function dayStart(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
 }
-function tomorrowStartISO() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+function dayEnd(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(23, 59, 59, 999);
+  return x;
+}
+function windowFor(view: View, range: Range) {
+  const todayS = dayStart();
+  const todayE = dayEnd();
+
+  if (view === "today") return { start: todayS, end: todayE };
+  if (view === "future")
+    return { start: new Date(todayE.getTime() + 1), end: null as Date | null };
+
+  const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+  const start = dayStart(new Date(todayS.getTime() - (days - 1) * 86400000));
+  return { start, end: todayE };
 }
 
+/* ===================== component ===================== */
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [view, setView] = useState<View>("today");      // DEFAULT = Today
-  const [range, setRange] = useState<Range>("7d");      // list window for "All"
+
+  // who am I (scoping)
+  const [bizId, setBizId] = useState<string | null>(null);
+
+  // UI state
+  const [view, setView] = useState<View>("today"); // default
+  const [range, setRange] = useState<Range>("7d");
   const [statusFilter, setStatusFilter] = useState<StatusOpt>("All");
   const [q, setQ] = useState("");
+
+  // data
   const [rows, setRows] = useState<Row[]>([]);
+  const [services, setServices] = useState<ServiceRow[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // map services for quick lookup
+  const svcById = useMemo(() => {
+    const m = new Map<number, ServiceRow>();
+    services.forEach((s) => m.set(s.id, s));
+    return m;
+  }, [services]);
+
+  // bootstrap bizId
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from("profiles").select("business_id").maybeSingle();
+      setBizId(data?.business_id ?? null);
+    })();
+  }, [supabase]);
+
+  // load appointments (+ services for pricing/name) for my business within the window
   async function load() {
+    if (!bizId) return;
     setLoading(true);
-    let query = supabase.from("appointments").select(
-      "id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164"
-    );
 
-    if (view === "today") {
-      query = query.gte("start_ts", startOfTodayISO()).lte("start_ts", endOfTodayISO());
-    } else if (view === "future") {
-      query = query.gte("start_ts", tomorrowStartISO());
-    } else {
-      // "all" — bound by range
-      const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
-      query = query.gte("start_ts", daysAgoISO(days));
-    }
+    const { start, end } = windowFor(view, range);
 
-    query = query.order("start_ts", { ascending: true });
-    const { data, error } = await query;
-    if (!error && data) setRows(data as any);
+    const [{ data: appts }, { data: svcs }] = await Promise.all([
+      (view === "future"
+        ? supabase
+            .from("appointments")
+            .select(
+              "id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id"
+            )
+            .eq("business_id", bizId)
+            .gte("start_ts", start.toISOString())
+            .order("start_ts", { ascending: true })
+        : supabase
+            .from("appointments")
+            .select(
+              "id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id"
+            )
+            .eq("business_id", bizId)
+            .gte("start_ts", start.toISOString())
+            .lte("start_ts", end!.toISOString())
+            .order("start_ts", { ascending: true })
+      ),
+      supabase
+        .from("services")
+        .select("id,name,code,default_price_usd")
+        .eq("business_id", bizId)
+        .order("active", { ascending: false })
+        .order("sort_order", { ascending: true, nullsFirst: false })
+        .order("name", { ascending: true }),
+    ]);
+
+    setRows((appts as any) ?? []);
+    setServices((svcs as any) ?? []);
     setLoading(false);
   }
 
+  // load when ready + when window changes
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, range, statusFilter, q]);
+  }, [bizId, view, range]);
 
-  // realtime refresh
+  // realtime – only my business’ rows
   useEffect(() => {
+    if (!bizId) return;
     const ch = supabase
       .channel("rt-appointments")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => load())
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "appointments", filter: `business_id=eq.${bizId}` },
+        () => load()
+      )
       .subscribe();
     return () => {
       supabase.removeChannel(ch);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bizId]);
 
-  // client filters
+  // client-side filter
   const filtered = rows.filter((r) => {
     if (statusFilter !== "All" && r.status !== statusFilter) return false;
     if (q.trim()) {
@@ -101,7 +176,26 @@ export default function AppointmentsPage() {
     return true;
   });
 
-  // styling helpers so only ONE group looks active
+  // price consistency with Overview
+  function priceForRow(r: Row): number {
+    if ((r.status ?? "").toLowerCase() === "cancelled") return 0;
+
+    // explicit price wins if valid
+    const explicit = toNumber(r.price_usd, NaN);
+    if (Number.isFinite(explicit) && explicit > 0) return explicit;
+
+    // else service default
+    if (r.service_id != null) {
+      const svc = svcById.get(r.service_id);
+      if (svc) return toNumber(svc.default_price_usd, 0);
+    }
+
+    // else normalized fallback
+    const ns = (r.normalized_service as any) ?? normalizeService(r.service_raw);
+    return priceForFromNs(ns, toNumber(r.price_usd, 0));
+  }
+
+  // styling so only ONE group looks active
   const rangeEnabled = view === "all";
   const rangeBtnClass = (r: Range) =>
     `btn-pill ${rangeEnabled && range === r ? "btn-pill--active" : ""} ${
@@ -110,7 +204,7 @@ export default function AppointmentsPage() {
 
   return (
     <div className="space-y-4">
-      {/* Top bar: tabs + New button */}
+      {/* Top bar */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <button
@@ -135,7 +229,7 @@ export default function AppointmentsPage() {
             All
           </button>
 
-          {/* Range pills only “active” when view === 'all' */}
+          {/* Range pills only "active" in All view */}
           <button
             type="button"
             className={rangeBtnClass("7d")}
@@ -165,7 +259,6 @@ export default function AppointmentsPage() {
           </button>
         </div>
 
-        {/* Right controls */}
         <div className="flex items-center gap-2">
           <select
             value={statusFilter}
@@ -208,20 +301,31 @@ export default function AppointmentsPage() {
           </thead>
           <tbody>
             {filtered.map((r) => {
-              const ns = r.normalized_service ?? normalizeService(r.service_raw);
+              // label: prefer service name if service_id is set
+              let svcLabel = r.service_raw || r.normalized_service || "Service";
+              if (r.service_id != null) {
+                const svc = svcById.get(r.service_id);
+                if (svc?.name) svcLabel = svc.name;
+              } else {
+                const ns = (r.normalized_service as any) ?? normalizeService(r.service_raw);
+                svcLabel = serviceLabelFor(ns, r.service_raw) || svcLabel;
+              }
+
+              const d = new Date(r.start_ts);
+              const date = d.toLocaleDateString();
+              const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
               return (
                 <tr key={r.id} className="border-t border-cx-border">
-                  <td className="py-2 pl-4 pr-4">{new Date(r.start_ts).toLocaleDateString()}</td>
-                  <td className="py-2 pr-4">
-                    {new Date(r.start_ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
-                  </td>
-                  <td className="py-2 pr-4">{serviceLabelFor(ns, r.service_raw)}</td>
+                  <td className="py-2 pl-4 pr-4">{date}</td>
+                  <td className="py-2 pr-4">{time}</td>
+                  <td className="py-2 pr-4">{svcLabel}</td>
                   <td className="py-2 pr-4">{r.caller_name ?? "-"}</td>
                   <td className="py-2 pr-4">{r.caller_phone_e164 ?? "-"}</td>
                   <td className="py-2 pr-4">
                     <StatusBadge status={r.status ?? "Booked"} />
                   </td>
-                  <td className="py-2 pr-4">{fmtUSD(priceFor(ns, toNumber(r.price_usd)))}</td>
+                  <td className="py-2 pr-4">{fmtUSD(priceForRow(r))}</td>
                 </tr>
               );
             })}
