@@ -16,6 +16,7 @@ type StatusOpt = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed";
 
 type Row = {
   id: number;
+  business_id: string;
   start_ts: string;
   end_ts: string | null;
   status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | null;
@@ -24,7 +25,8 @@ type Row = {
   price_usd: number | string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
-  service_id: number | null; // <- needed to pull default price/name
+  service_id: number | null;
+  address_text: string | null;         // ← NEW: show when is_mobile = true
 };
 
 type ServiceRow = {
@@ -33,6 +35,8 @@ type ServiceRow = {
   code: string | null;
   default_price_usd: number | string;
 };
+
+type BizRow = { id: string; is_mobile: boolean };
 
 /* ----------------------- helpers ------------------------- */
 function fmtUSD(n: number) {
@@ -73,8 +77,8 @@ function windowFor(view: View, range: Range) {
 export default function AppointmentsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
 
-  // who am I (scoping)
-  const [bizId, setBizId] = useState<string | null>(null);
+  // business context
+  const [biz, setBiz] = useState<BizRow | null>(null);
 
   // UI state
   const [view, setView] = useState<View>("today"); // default
@@ -94,17 +98,42 @@ export default function AppointmentsPage() {
     return m;
   }, [services]);
 
-  // bootstrap bizId
+  // bootstrap business (id + is_mobile), react to realtime toggle
   useEffect(() => {
+    let unsub: (() => void) | undefined;
+
     (async () => {
-      const { data } = await supabase.from("profiles").select("business_id").maybeSingle();
-      setBizId(data?.business_id ?? null);
+      // RLS should scope to the signed-in user’s business
+      const { data } = await supabase
+        .from("businesses")
+        .select("id,is_mobile")
+        .maybeSingle<BizRow>();
+      if (data) setBiz(data);
+
+      // realtime: refresh when the row changes
+      if (data?.id) {
+        const ch = supabase
+          .channel("rt-business-is-mobile")
+          .on(
+            "postgres_changes",
+            { event: "UPDATE", schema: "public", table: "businesses", filter: `id=eq.${data.id}` },
+            payload => {
+              const rec = payload.new as BizRow;
+              setBiz(prev => (prev ? { ...prev, is_mobile: !!rec.is_mobile } : rec));
+            }
+          )
+          .subscribe();
+
+        unsub = () => supabase.removeChannel(ch);
+      }
     })();
+
+    return () => { unsub?.(); };
   }, [supabase]);
 
-  // load appointments (+ services for pricing/name) for my business within the window
+  // load appointments (+ services) for my business within the window
   async function load() {
-    if (!bizId) return;
+    if (!biz?.id) return;
     setLoading(true);
 
     const { start, end } = windowFor(view, range);
@@ -114,17 +143,17 @@ export default function AppointmentsPage() {
         ? supabase
             .from("appointments")
             .select(
-              "id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id"
+              "id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text"
             )
-            .eq("business_id", bizId)
+            .eq("business_id", biz.id)
             .gte("start_ts", start.toISOString())
             .order("start_ts", { ascending: true })
         : supabase
             .from("appointments")
             .select(
-              "id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id"
+              "id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text"
             )
-            .eq("business_id", bizId)
+            .eq("business_id", biz.id)
             .gte("start_ts", start.toISOString())
             .lte("start_ts", end!.toISOString())
             .order("start_ts", { ascending: true })
@@ -132,7 +161,7 @@ export default function AppointmentsPage() {
       supabase
         .from("services")
         .select("id,name,code,default_price_usd")
-        .eq("business_id", bizId)
+        .eq("business_id", biz.id)
         .order("active", { ascending: false })
         .order("sort_order", { ascending: true, nullsFirst: false })
         .order("name", { ascending: true }),
@@ -147,30 +176,28 @@ export default function AppointmentsPage() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bizId, view, range]);
+  }, [biz?.id, view, range]);
 
   // realtime – only my business’ rows
   useEffect(() => {
-    if (!bizId) return;
+    if (!biz?.id) return;
     const ch = supabase
       .channel("rt-appointments")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "appointments", filter: `business_id=eq.${bizId}` },
+        { event: "*", schema: "public", table: "appointments", filter: `business_id=eq.${biz.id}` },
         () => load()
       )
       .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
+    return () => { supabase.removeChannel(ch); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bizId]);
+  }, [biz?.id]);
 
   // client-side filter
   const filtered = rows.filter((r) => {
     if (statusFilter !== "All" && r.status !== statusFilter) return false;
     if (q.trim()) {
-      const hay = `${r.caller_name ?? ""} ${r.caller_phone_e164 ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
+      const hay = `${r.caller_name ?? ""} ${r.caller_phone_e164 ?? ""} ${r.service_raw ?? ""} ${r.address_text ?? ""}`.toLowerCase();
       if (!hay.includes(q.trim().toLowerCase())) return false;
     }
     return true;
@@ -201,6 +228,8 @@ export default function AppointmentsPage() {
     `btn-pill ${rangeEnabled && range === r ? "btn-pill--active" : ""} ${
       !rangeEnabled ? "opacity-50 cursor-not-allowed" : ""
     }`;
+
+  const showAddress = !!biz?.is_mobile;
 
   return (
     <div className="space-y-4">
@@ -275,7 +304,7 @@ export default function AppointmentsPage() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search name, phone, service"
+            placeholder="Search name, phone, service, address"
             className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none w-64"
           />
 
@@ -295,6 +324,7 @@ export default function AppointmentsPage() {
               <th className="py-3 pr-4">Service</th>
               <th className="py-3 pr-4">Name</th>
               <th className="py-3 pr-4">Phone</th>
+              {showAddress && <th className="py-3 pr-4">Address</th>}
               <th className="py-3 pr-4">Status</th>
               <th className="py-3 pr-4">Price</th>
             </tr>
@@ -322,6 +352,7 @@ export default function AppointmentsPage() {
                   <td className="py-2 pr-4">{svcLabel}</td>
                   <td className="py-2 pr-4">{r.caller_name ?? "-"}</td>
                   <td className="py-2 pr-4">{r.caller_phone_e164 ?? "-"}</td>
+                  {showAddress && <td className="py-2 pr-4">{r.address_text ?? "—"}</td>}
                   <td className="py-2 pr-4">
                     <StatusBadge status={r.status ?? "Booked"} />
                   </td>
@@ -331,14 +362,14 @@ export default function AppointmentsPage() {
             })}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-cx-muted">
+                <td colSpan={showAddress ? 8 : 7} className="py-8 text-center text-cx-muted">
                   No results.
                 </td>
               </tr>
             )}
             {loading && (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-cx-muted">
+                <td colSpan={showAddress ? 8 : 7} className="py-8 text-center text-cx-muted">
                   Loading…
                 </td>
               </tr>
