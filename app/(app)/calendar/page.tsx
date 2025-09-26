@@ -6,36 +6,26 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 type Row = {
   id: number;
   business_id: string;
-  start_ts: string;          // UTC in DB
+  start_ts: string;
   end_ts: string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
   service_raw: string | null;
   status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | null;
+  address_text: string | null;          // ← NEW
 };
 
-function startOfMonthLocal(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-function endOfMonthLocal(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
-}
-// Sunday-first month grid: 6 rows x 7 cols (42 cells)
+type BizRow = { id: string; is_mobile: boolean };
+
+function startOfMonthLocal(d: Date) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function buildMonthGrid(view: Date) {
   const first = startOfMonthLocal(view);
   const start = new Date(first);
-  // first.getDay(): 0=Sun..6=Sat ; go back to previous Sunday
-  start.setDate(first.getDate() - first.getDay());
+  start.setDate(first.getDate() - first.getDay()); // previous Sunday
   const days: Date[] = [];
-  for (let i = 0; i < 42; i++) {
-    const d = new Date(start);
-    d.setDate(start.getDate() + i);
-    days.push(d);
-  }
+  for (let i = 0; i < 42; i++) { const d = new Date(start); d.setDate(start.getDate() + i); days.push(d); }
   return days;
 }
-
-// Bounds for the *local* calendar day; send as UTC ISO to DB
 function dayBoundsISO(d: Date) {
   const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
   const end = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 0);
@@ -44,13 +34,13 @@ function dayBoundsISO(d: Date) {
 
 export default function CalendarPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
+  const [biz, setBiz] = useState<BizRow | null>(null);
+
   const [view, setView] = useState<Date>(() => {
-    const t = new Date();
-    return new Date(t.getFullYear(), t.getMonth(), 1); // ensure month is local-safe
+    const t = new Date(); return new Date(t.getFullYear(), t.getMonth(), 1);
   });
   const [selected, setSelected] = useState<Date>(() => {
-    const t = new Date();
-    return new Date(t.getFullYear(), t.getMonth(), t.getDate());
+    const t = new Date(); return new Date(t.getFullYear(), t.getMonth(), t.getDate());
   });
   const [rows, setRows] = useState<Row[]>([]);
   const [busy, setBusy] = useState(false);
@@ -58,12 +48,35 @@ export default function CalendarPage() {
   const grid = useMemo(() => buildMonthGrid(view), [view]);
   const monthLabel = view.toLocaleString(undefined, { month: "long", year: "numeric" });
 
+  // load biz + realtime toggle
+  useEffect(() => {
+    let unsub: (() => void) | undefined;
+    (async () => {
+      const { data } = await supabase.from("businesses").select("id,is_mobile").maybeSingle<BizRow>();
+      if (data) setBiz(data);
+      if (data?.id) {
+        const ch = supabase
+          .channel("rt-biz-cal")
+          .on(
+            "postgres_changes",
+            { event: "UPDATE", schema: "public", table: "businesses", filter: `id=eq.${data.id}` },
+            payload => setBiz(prev => prev ? { ...prev, is_mobile: !!(payload.new as any)?.is_mobile } : (payload.new as BizRow))
+          )
+          .subscribe();
+        unsub = () => supabase.removeChannel(ch);
+      }
+    })();
+    return () => { unsub?.(); };
+  }, [supabase]);
+
   async function loadDay(d: Date) {
+    if (!biz?.id) return;
     setBusy(true);
     const { startISO, endISO } = dayBoundsISO(d);
     const { data, error } = await supabase
       .from("appointments")
-      .select("*")
+      .select("id,business_id,start_ts,end_ts,caller_name,caller_phone_e164,service_raw,status,address_text")
+      .eq("business_id", biz.id)
       .gte("start_ts", startISO)
       .lt("start_ts", endISO)
       .order("start_ts", { ascending: true });
@@ -71,53 +84,37 @@ export default function CalendarPage() {
     setBusy(false);
   }
 
-  useEffect(() => { loadDay(selected); }, [selected]); // load when date changes
+  useEffect(() => { loadDay(selected); }, [biz?.id, selected]);
 
-  // Realtime: refresh the selected day when any appointment changes
+  // realtime: refresh the selected day when a row for this business changes
   useEffect(() => {
+    if (!biz?.id) return;
     const ch = supabase
       .channel("rt-cal")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => {
-        loadDay(selected);
-      })
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "appointments", filter: `business_id=eq.${biz.id}` },
+        () => loadDay(selected)
+      )
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [selected, supabase]);
+  }, [biz?.id, selected, supabase]);
 
-  function isSameDay(a: Date, b: Date) {
-    return a.getFullYear() === b.getFullYear() &&
-           a.getMonth() === b.getMonth() &&
-           a.getDate() === b.getDate();
-  }
-  function isSameMonth(a: Date, b: Date) {
-    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
-  }
+  function isSameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+  function isSameMonth(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth(); }
 
-  function goPrevMonth() {
-    const next = new Date(view.getFullYear(), view.getMonth() - 1, 1);
-    setView(next);
-    // if selected is outside new month grid, keep the same day number if possible
-    setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28)));
-  }
-  function goNextMonth() {
-    const next = new Date(view.getFullYear(), view.getMonth() + 1, 1);
-    setView(next);
-    setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28)));
-  }
-  function goToday() {
-    const t = new Date();
-    const m1 = new Date(t.getFullYear(), t.getMonth(), 1);
-    setView(m1);
-    setSelected(new Date(t.getFullYear(), t.getMonth(), t.getDate()));
-  }
+  function goPrevMonth() { const next = new Date(view.getFullYear(), view.getMonth() - 1, 1); setView(next); setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28))); }
+  function goNextMonth() { const next = new Date(view.getFullYear(), view.getMonth() + 1, 1); setView(next); setSelected(new Date(next.getFullYear(), next.getMonth(), Math.min(selected.getDate(), 28))); }
+  function goToday() { const t = new Date(); const m1 = new Date(t.getFullYear(), t.getMonth(), 1); setView(m1); setSelected(new Date(t.getFullYear(), t.getMonth(), t.getDate())); }
 
-  // Status badge class
   function statusBadge(s: Row["status"]) {
     if (s === "Cancelled") return "badge badge--cancelled";
     if (s === "Rescheduled") return "badge badge--rescheduled";
     if (s === "Completed") return "badge badge--completed";
     return "badge badge--booked";
   }
+
+  const showAddress = !!biz?.is_mobile;
 
   return (
     <div className="space-y-6">
@@ -178,27 +175,27 @@ export default function CalendarPage() {
                 <th className="py-2 pr-4">Name</th>
                 <th className="py-2 pr-4">Phone</th>
                 <th className="py-2 pr-4">Service</th>
+                {showAddress && <th className="py-2 pr-4">Address</th>}
                 <th className="py-2 pr-4">Status</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => {
-                const t = new Date(r.start_ts); // shown in local time
+                const t = new Date(r.start_ts); // local time
                 return (
                   <tr key={r.id} className="border-t border-cx-border">
-                    <td className="py-2 pr-4">
-                      {t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
-                    </td>
+                    <td className="py-2 pr-4">{t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</td>
                     <td className="py-2 pr-4">{r.caller_name ?? "-"}</td>
                     <td className="py-2 pr-4">{r.caller_phone_e164 ?? "-"}</td>
                     <td className="py-2 pr-4">{r.service_raw ?? "-"}</td>
+                    {showAddress && <td className="py-2 pr-4">{r.address_text ?? "—"}</td>}
                     <td className="py-2 pr-4"><span className={statusBadge(r.status)}>{r.status ?? "Booked"}</span></td>
                   </tr>
                 );
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td className="py-6 text-center text-cx-muted" colSpan={5}>
+                  <td className="py-6 text-center text-cx-muted" colSpan={showAddress ? 6 : 5}>
                     {busy ? "Loading…" : "No appointments for this day."}
                   </td>
                 </tr>
