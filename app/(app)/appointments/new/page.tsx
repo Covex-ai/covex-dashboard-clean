@@ -6,14 +6,16 @@ import { createBrowserClient } from "@/lib/supabaseBrowser";
 type ServiceRow = {
   id: number;
   business_id: string;
-  code: string;                 // unique per business (e.g., CLEAN_45)
-  name: string;                 // display name
-  event_type_id: number | null; // Cal.com event type id
+  code: string;
+  name: string;
+  event_type_id: number | null;
   duration_min: number | null;
   default_price_cents: number | null;
   active: boolean;
   sort_order: number | null;
 };
+
+type BizRow = { id: string; is_mobile: boolean };
 
 type RawSlot = string | { start?: string; startTime?: string; time?: string; utcStart?: string };
 type Slot = { iso: string };
@@ -36,6 +38,8 @@ const msgOf = (e: any) => (typeof e === "string" ? e : e?.message || JSON.string
 
 export default function NewAppointmentPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
+
+  const [biz, setBiz] = useState<BizRow | null>(null);
   const [services, setServices] = useState<ServiceRow[]>([]);
   const [serviceId, setServiceId] = useState<number | null>(null);
 
@@ -48,38 +52,37 @@ export default function NewAppointmentPage() {
   const [phoneLocal, setPhoneLocal] = useState(""); // 10 digits
   const phoneE164 = US_CC + phoneLocal;
 
-  const [bizId, setBizId] = useState<string | null>(null);
+  const [addressText, setAddressText] = useState(""); // ← NEW
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const current = services.find((s) => s.id === serviceId) || null;
 
-  // --- Ensure business_id for this user (critical for mirroring) ---
-  async function ensureBusinessId(): Promise<string | null> {
-    // 1) try to read
-    const { data: p } = await supabase.from("profiles").select("business_id").single();
-    if (p?.business_id) return p.business_id as string;
-
-    // 2) try to create via RPC if available
-    try {
-      // This RPC must exist per our earlier setup; if not, it will throw and we just re-read
-      await supabase.rpc("ensure_business_for_me");
-      const { data: p2 } = await supabase.from("profiles").select("business_id").single();
-      return p2?.business_id ?? null;
-    } catch {
-      // fallback: re-read once more anyway
-      const { data: p3 } = await supabase.from("profiles").select("business_id").single();
-      return p3?.business_id ?? null;
-    }
-  }
-
+  // load business (id + is_mobile) + realtime for toggle
   useEffect(() => {
-    (async () => {
-      const id = await ensureBusinessId();
-      setBizId(id ?? null);
-    })();
-  }, []);
+    let unsub: (() => void) | undefined;
 
+    (async () => {
+      const { data } = await supabase.from("businesses").select("id,is_mobile").maybeSingle<BizRow>();
+      if (data) setBiz(data);
+
+      if (data?.id) {
+        const ch = supabase
+          .channel("rt-biz-is-mobile-new-appt")
+          .on(
+            "postgres_changes",
+            { event: "UPDATE", schema: "public", table: "businesses", filter: `id=eq.${data.id}` },
+            payload => setBiz(prev => prev ? { ...prev, is_mobile: !!(payload.new as any)?.is_mobile } : (payload.new as BizRow))
+          )
+          .subscribe();
+        unsub = () => supabase.removeChannel(ch);
+      }
+    })();
+
+    return () => { unsub?.(); };
+  }, [supabase]);
+
+  // load services (active for this business)
   useEffect(() => {
     (async () => {
       const { data, error } = await supabase
@@ -96,6 +99,7 @@ export default function NewAppointmentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // fetch slots from Cal.com
   useEffect(() => {
     setSlots([]); setSelectedISO(null); setErr(null);
     if (!current?.event_type_id) return;
@@ -119,7 +123,7 @@ export default function NewAppointmentPage() {
         setErr(msgOf(e));
       }
     })();
-  }, [serviceId, date, current?.event_type_id]); // include event_type_id safety
+  }, [serviceId, date, current?.event_type_id]);
 
   async function createAppt() {
     setErr(null);
@@ -130,17 +134,13 @@ export default function NewAppointmentPage() {
     if (!name.trim()) return setErr("Client name is required.");
     if (!email.trim()) return setErr("Client email is required.");
     if (phoneLocal.replace(/\D/g, "").length !== 10) return setErr("Enter a 10-digit US phone number.");
+    if (biz?.is_mobile && !addressText.trim()) return setErr("Service address is required for on-site visits.");
 
     setBusy(true);
     try {
-      // Make sure we have a business_id for mirroring (create if missing)
-      const business_id = bizId ?? (await ensureBusinessId());
-      if (!business_id) {
-        throw new Error(
-          "No business is linked to this account yet. Open Settings and click “Fix now”, then try again."
-        );
+      if (!biz?.id) {
+        throw new Error("No business is linked to this account yet. Open Settings and click “Fix now”, then try again.");
       }
-      setBizId(business_id);
 
       // 1) Book on Cal.com
       const payload = {
@@ -166,26 +166,24 @@ export default function NewAppointmentPage() {
           : null;
 
       const { error: insErr } = await supabase.from("appointments").insert({
-        business_id,
+        business_id: biz.id,
         booking_id: j?.data?.id ?? null,
         status: "Booked",
         source: "Dashboard",
         caller_name: payload.name,
         caller_phone_e164: phoneE164,
         service_raw: current.name,
-        normalized_service: current.code, // keep your code as your normalized tag
+        normalized_service: current.code,
         start_ts: selectedISO,
         price_usd: priceUsd,
+        address_text: biz.is_mobile ? addressText.trim() : null,   // ← NEW
       });
 
-      if (insErr) {
-        // Show the actual DB/RLS error so it’s debuggable
-        throw new Error(`Database insert failed: ${insErr.message}`);
-      }
+      if (insErr) throw new Error(`Database insert failed: ${insErr.message}`);
 
-      // 3) UX reset
       alert("Appointment created ✅");
       setSelectedISO(null);
+      setAddressText("");
     } catch (e) {
       setErr(msgOf(e));
     } finally {
@@ -210,6 +208,8 @@ export default function NewAppointmentPage() {
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate();
+
+  const showAddress = !!biz?.is_mobile;
 
   return (
     <div className="space-y-6">
@@ -316,6 +316,19 @@ export default function NewAppointmentPage() {
             <div className="text-xs text-cx-muted mt-1">Exactly 10 digits; country code is locked to +1.</div>
           </div>
         </div>
+
+        {showAddress && (
+          <div className="mt-4">
+            <div className="text-sm text-cx-muted mb-1">Service address</div>
+            <textarea
+              className="w-full bg-cx-bg border border-cx-border rounded-xl px-3 py-2 min-h-[90px]"
+              placeholder="123 Main St, Suite 4 • City, ST 12345"
+              value={addressText}
+              onChange={(e) => setAddressText(e.target.value)}
+            />
+            <div className="text-xs text-cx-muted mt-1">Shown to you on the schedule and lists.</div>
+          </div>
+        )}
 
         {err && <div className="text-rose-400 text-sm mt-3">{err}</div>}
 
