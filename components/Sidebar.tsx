@@ -65,7 +65,16 @@ export default function Sidebar() {
       </nav>
 
       <div className="p-4 border-t border-cx-border">
-        <button onClick={signOut} className="btn-pill w-full text-left">Sign out</button>
+        {/* Red danger-styled Sign out button */}
+        <button
+          onClick={signOut}
+          className="w-full text-left px-4 py-2.5 rounded-xl font-medium border transition
+                     bg-rose-600/20 text-rose-300 border-rose-700/40
+                     hover:bg-rose-600/30 hover:text-rose-200
+                     focus:outline-none focus:ring-2 focus:ring-rose-500/40"
+        >
+          Sign out
+        </button>
         <div className="text-xs text-cx-muted mt-3">© {new Date().getFullYear()} Covex</div>
       </div>
     </aside>
