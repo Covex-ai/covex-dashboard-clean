@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 
 type ServiceRow = {
@@ -12,24 +12,33 @@ type ServiceRow = {
   slot_minutes: number | null;
   event_type_id: number | null;
   sort_order?: number | null;
-  // business_id exists in DB, we just don’t need to render it
 };
 
 export default function ServicesListPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [bizId, setBizId] = useState<string | null>(null);
+
   const [rows, setRows] = useState<ServiceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const newNameRef = useRef<HTMLInputElement | null>(null);
 
-  /** Load my business_id from profiles (id = auth.uid()) */
+  /* ---------------- helpers ---------------- */
+
+  // e.g. “New patient exam – 60m” -> “NEW_PATIENT_EXAM_60M”
+  function normalizeCode(s: string): string {
+    return s
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 40);
+  }
+
   async function loadBizId() {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("business_id")
-      .maybeSingle();
+    const { data, error } = await supabase.from("profiles").select("business_id").maybeSingle();
     if (error) {
       setMsg(error.message);
       return;
@@ -46,6 +55,7 @@ export default function ServicesListPage() {
       .eq("business_id", bizId)
       .order("sort_order", { ascending: true, nullsFirst: true })
       .order("name", { ascending: true });
+
     if (error) setMsg(error.message);
     setRows((data as any) ?? []);
     setLoading(false);
@@ -58,6 +68,8 @@ export default function ServicesListPage() {
   useEffect(() => {
     if (!bizId) return;
     load();
+
+    // realtime only for my business rows
     const ch = supabase
       .channel("rt-services")
       .on(
@@ -66,11 +78,16 @@ export default function ServicesListPage() {
         () => load()
       )
       .subscribe();
+
     return () => {
-      void supabase.removeChannel(ch);
+      supabase.removeChannel(ch);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bizId]);
+
+  function onLocalEdit(id: number, field: keyof ServiceRow, value: any) {
+    setRows(prev => prev.map(r => (r.id === id ? { ...r, [field]: value } : r)));
+  }
 
   async function savePatch(id: number, patch: Partial<ServiceRow>) {
     setSavingId(id);
@@ -78,40 +95,64 @@ export default function ServicesListPage() {
     const { error } = await supabase.from("services").update(patch).eq("id", id);
     setSavingId(null);
     if (error) {
+      // Common errors to surface nicely (e.g., unique code per business)
       setMsg(error.message);
-      load(); // revert to server truth
+      await load(); // revert local state to server truth
     }
   }
 
-  function onLocalEdit(id: number, field: keyof ServiceRow, value: any) {
-    setRows(prev => prev.map(r => (r.id === id ? { ...r, [field]: value } : r)));
-  }
-
-  async function handleDelete(id: number) {
+  async function handleDelete(row: ServiceRow) {
     setMsg(null);
-    const ok = confirm("Delete this service? This cannot be undone.");
+    const ok = confirm(`Delete the service “${row.name}”? This cannot be undone.`);
     if (!ok) return;
-    const { error } = await supabase.from("services").delete().eq("id", id);
-    if (error) setMsg(error.message);
-    else setRows(prev => prev.filter(r => r.id !== id));
+
+    const { error } = await supabase.from("services").delete().eq("id", row.id);
+    if (error) {
+      // If there’s a FK constraint (appointments -> services), backend may reject.
+      setMsg(error.message);
+      return;
+    }
+    setRows(prev => prev.filter(r => r.id !== row.id));
   }
 
   async function handleCreate() {
     if (!bizId) {
-      setMsg("No business_id found. Try reloading the page.");
+      setMsg("No business_id found. Reload the page and try again.");
       return;
     }
     setCreating(true);
     setMsg(null);
+
+    // Create with sensible defaults; code is derived from name on first rename if blank
     const { data, error } = await supabase
       .from("services")
-      .insert([{ business_id: bizId, name: "New service", active: true, slot_minutes: 60 }])
+      .insert([
+        {
+          business_id: bizId,
+          name: "New service",
+          code: null,
+          active: true,
+          slot_minutes: 60,
+          event_type_id: null,
+          sort_order: (rows[0]?.sort_order ?? 0) - 1, // bubble to top
+        },
+      ])
       .select("id,name,code,active,slot_minutes,event_type_id,sort_order")
       .single();
+
     setCreating(false);
-    if (error) setMsg(error.message);
-    if (data) setRows(prev => [data as ServiceRow, ...prev]);
+    if (error) {
+      setMsg(error.message);
+      return;
+    }
+    if (data) {
+      setRows(prev => [data as ServiceRow, ...prev]);
+      // Focus the new name input for quick editing
+      setTimeout(() => newNameRef.current?.focus(), 50);
+    }
   }
+
+  /* ---------------- render ---------------- */
 
   return (
     <div className="space-y-6">
@@ -122,15 +163,17 @@ export default function ServicesListPage() {
           <h1 className="text-lg font-semibold">Services</h1>
         </div>
         <button className="btn-pill btn-pill--active" onClick={handleCreate} disabled={!bizId || creating}>
-          {creating ? "Creating…" : "+ New"}
+          {creating ? "Creating…" : "+ New service"}
         </button>
       </div>
 
       {/* Table */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <p className="text-sm text-cx-muted mb-4">
-          Toggle <span className="text-white">Active</span>. Set <span className="text-white">Slot (min)</span> and Cal.com{" "}
-          <span className="text-white">Event Type ID</span>. Use <span className="text-white">Delete</span> to remove a service.
+          Edit <span className="text-white font-medium">Name</span> and <span className="text-white font-medium">Code</span>,
+          toggle <span className="text-white font-medium">Active</span>, set
+          <span className="text-white font-medium"> Slot (min)</span> and Cal.com
+          <span className="text-white font-medium"> Event Type ID</span>. Use <span className="text-white font-medium">Delete</span> to remove a service.
         </p>
 
         <div className="overflow-x-auto">
@@ -146,58 +189,120 @@ export default function ServicesListPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t border-cx-border">
-                  <td className="py-2 pr-4">{r.name}</td>
-                  <td className="py-2 pr-4">{r.code ?? "-"}</td>
-                  <td className="py-2 pr-4">
-                    <button
-                      onClick={() => {
-                        onLocalEdit(r.id, "active", !r.active);
-                        savePatch(r.id, { active: !r.active });
-                      }}
-                      className={`px-2 py-1 rounded-xl text-xs font-medium ${
-                        r.active ? "bg-white/10 text-white" : "bg-white/5 text-cx-muted border border-cx-border"
-                      }`}
-                    >
-                      {r.active ? "Active" : "Inactive"}
-                    </button>
-                  </td>
-                  <td className="py-2 pr-4">
-                    <input
-                      type="number"
-                      min={5}
-                      step={5}
-                      value={r.slot_minutes ?? 60}
-                      onChange={(e) => onLocalEdit(r.id, "slot_minutes", Number(e.target.value || 0))}
-                      onBlur={(e) => savePatch(r.id, { slot_minutes: Number(e.target.value || 0) })}
-                      className="w-28 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
-                    />
-                  </td>
-                  <td className="py-2 pr-4">
-                    <input
-                      type="number"
-                      value={r.event_type_id ?? ""}
-                      onChange={(e) => onLocalEdit(r.id, "event_type_id", e.target.value ? Number(e.target.value) : null)}
-                      onBlur={(e) => savePatch(r.id, { event_type_id: e.target.value ? Number(e.target.value) : null })}
-                      placeholder="e.g. 3274310"
-                      className="w-40 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
-                    />
-                  </td>
-                  <td className="py-2 pr-4">
-                    <div className="flex items-center gap-3">
-                      {savingId === r.id && <span className="text-xs text-cx-muted">Saving…</span>}
+              {rows.map((r, idx) => {
+                const isNewTopRow = idx === 0 && r.name === "New service";
+                return (
+                  <tr key={r.id} className="border-top border-cx-border">
+                    {/* Name (editable) */}
+                    <td className="py-2 pr-4">
+                      <input
+                        ref={isNewTopRow ? newNameRef : undefined}
+                        value={r.name}
+                        onChange={(e) => onLocalEdit(r.id, "name", e.target.value)}
+                        onBlur={async (e) => {
+                          const nextName = e.target.value.trim() || "Untitled service";
+                          const patch: Partial<ServiceRow> = { name: nextName };
+                          // if code is empty/null, auto-generate from new name
+                          if (!r.code || !r.code.trim()) patch.code = normalizeCode(nextName);
+                          await savePatch(r.id, patch);
+                        }}
+                        onKeyDown={async (e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        }}
+                        className="w-64 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                        placeholder="Service name"
+                      />
+                    </td>
+
+                    {/* Code (editable, uppercase) */}
+                    <td className="py-2 pr-4">
+                      <input
+                        value={r.code ?? ""}
+                        onChange={(e) => onLocalEdit(r.id, "code", e.target.value.toUpperCase())}
+                        onBlur={async (e) => {
+                          const raw = e.target.value.trim();
+                          const next = raw ? normalizeCode(raw) : null;
+                          await savePatch(r.id, { code: next });
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        }}
+                        placeholder="E.g. ACUTE_30"
+                        className="w-56 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none uppercase tracking-wide"
+                      />
+                    </td>
+
+                    {/* Active (toggle) */}
+                    <td className="py-2 pr-4">
                       <button
-                        onClick={() => handleDelete(r.id)}
-                        className="px-2 py-1 rounded-xl text-xs font-medium bg-rose-600/20 text-rose-300 border border-rose-700/40"
-                        title="Delete service"
+                        onClick={() => {
+                          onLocalEdit(r.id, "active", !r.active);
+                          savePatch(r.id, { active: !r.active });
+                        }}
+                        className={`px-2 py-1 rounded-xl text-xs font-medium ${
+                          r.active
+                            ? "bg-white/10 text-white"
+                            : "bg-white/5 text-cx-muted border border-cx-border"
+                        }`}
+                        aria-pressed={r.active}
                       >
-                        Delete
+                        {r.active ? "Active" : "Inactive"}
                       </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+
+                    {/* Slot minutes */}
+                    <td className="py-2 pr-4">
+                      <input
+                        type="number"
+                        min={5}
+                        step={5}
+                        value={r.slot_minutes ?? 60}
+                        onChange={(e) => onLocalEdit(r.id, "slot_minutes", Number(e.target.value || 0))}
+                        onBlur={(e) => savePatch(r.id, { slot_minutes: Number(e.target.value || 0) })}
+                        className="w-28 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                      />
+                    </td>
+
+                    {/* Cal.com event type ID */}
+                    <td className="py-2 pr-4">
+                      <input
+                        type="number"
+                        value={r.event_type_id ?? ""}
+                        onChange={(e) =>
+                          onLocalEdit(
+                            r.id,
+                            "event_type_id",
+                            e.target.value ? Number(e.target.value) : null
+                          )
+                        }
+                        onBlur={(e) =>
+                          savePatch(r.id, {
+                            event_type_id: e.target.value ? Number(e.target.value) : null,
+                          })
+                        }
+                        placeholder="e.g. 3274310"
+                        className="w-40 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
+                      />
+                    </td>
+
+                    {/* Actions */}
+                    <td className="py-2 pr-4">
+                      <div className="flex items-center gap-3">
+                        {savingId === r.id && (
+                          <span className="text-xs text-cx-muted" aria-live="polite">Saving…</span>
+                        )}
+                        <button
+                          onClick={() => handleDelete(r)}
+                          className="px-2 py-1 rounded-xl text-xs font-medium bg-rose-600/20 text-rose-300 border border-rose-700/40"
+                          title="Delete service"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
 
               {rows.length === 0 && !loading && (
                 <tr>
