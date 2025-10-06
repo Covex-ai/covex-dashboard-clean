@@ -1,25 +1,37 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { createBrowserClient } from "@/lib/supabaseBrowser";
 import {
   normalizeService,
   priceFor as priceForFromNs,
   serviceLabelFor,
+  type NormalizedService,
 } from "@/lib/pricing";
+import RangePills from "@/components/RangePills";
 
-type View = "today" | "future" | "all";
+function fmtUSD(n: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
+}
+function toNumber(x: unknown, fallback = 0): number {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
+function mmdd(d: Date) {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}-${dd}`;
+}
+
 type Range = "7d" | "30d" | "90d";
-type StatusOpt = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed" | "Inquiry";
 
-type Row = {
+type ApptRow = {
   id: number;
   start_ts: string;
   end_ts: string | null;
-  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | "Inquiry" | null;
+  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | "Inquiry" | string | null;
   service_raw: string | null;
-  normalized_service: string | null;
+  normalized_service: NormalizedService | null;
   price_usd: number | string | null;
   caller_name: string | null;
   caller_phone_e164: string | null;
@@ -29,40 +41,15 @@ type Row = {
 type ServiceRow = {
   id: number;
   name: string;
-  code: string | null;
+  code: string;
   default_price_usd: number | string;
 };
 
-function fmtUSD(n: number) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
-}
-function toNumber(x: unknown, fallback = 0): number {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
-}
-function dayStart(d = new Date()) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
-function dayEnd(d = new Date()) { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; }
-function windowFor(view: View, range: Range) {
-  const todayS = dayStart(); const todayE = dayEnd();
-  if (view === "today") return { start: todayS, end: todayE };
-  if (view === "future") return { start: new Date(todayE.getTime() + 1), end: null as Date | null };
-  const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
-  const start = dayStart(new Date(todayS.getTime() - (days - 1) * 86400000));
-  return { start, end: todayE };
-}
-
-export default function AppointmentsPage() {
+export default function DashboardPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
-  const [bizId, setBizId] = useState<string | null>(null);
-
-  const [view, setView] = useState<View>("today");
   const [range, setRange] = useState<Range>("7d");
-  const [statusFilter, setStatusFilter] = useState<StatusOpt>("All");
-  const [q, setQ] = useState("");
-
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<ApptRow[]>([]);
   const [services, setServices] = useState<ServiceRow[]>([]);
-  const [loading, setLoading] = useState(true);
 
   const svcById = useMemo(() => {
     const m = new Map<number, ServiceRow>();
@@ -70,185 +57,236 @@ export default function AppointmentsPage() {
     return m;
   }, [services]);
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.from("profiles").select("business_id").maybeSingle();
-      setBizId(data?.business_id ?? null);
-    })();
-  }, [supabase]);
+  function daysFor(r: Range) { return r === "7d" ? 7 : r === "30d" ? 30 : 90; }
+
+  function dateWindow(r: Range) {
+    const days = daysFor(r);
+    const end = new Date(); end.setHours(23, 59, 59, 999);
+    const start = new Date(end); start.setDate(end.getDate() - (days - 1)); start.setHours(0, 0, 0, 0);
+    return { start, end };
+    }
 
   async function load() {
-    if (!bizId) return;
-    setLoading(true);
-
-    const { start, end } = windowFor(view, range);
-
+    const { start, end } = dateWindow(range);
     const [{ data: appts }, { data: svcs }] = await Promise.all([
-      (view === "future"
-        ? supabase
-            .from("appointments")
-            .select("id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id")
-            .eq("business_id", bizId)
-            .gte("start_ts", start.toISOString())
-            .order("start_ts", { ascending: true })
-        : supabase
-            .from("appointments")
-            .select("id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id")
-            .eq("business_id", bizId)
-            .gte("start_ts", start.toISOString())
-            .lte("start_ts", end!.toISOString())
-            .order("start_ts", { ascending: true })),
+      supabase
+        .from("appointments")
+        .select("id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id")
+        .gte("start_ts", start.toISOString())
+        .lte("start_ts", end.toISOString())
+        .order("start_ts", { ascending: true }),
       supabase
         .from("services")
         .select("id,name,code,default_price_usd")
-        .eq("business_id", bizId)
         .order("active", { ascending: false })
         .order("sort_order", { ascending: true, nullsFirst: false })
         .order("name", { ascending: true }),
     ]);
-
     setRows((appts as any) ?? []);
     setServices((svcs as any) ?? []);
-    setLoading(false);
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [bizId, view, range]);
+  useEffect(() => { load(); }, [range]);
 
   useEffect(() => {
-    if (!bizId) return;
     const ch = supabase
       .channel("rt-appointments")
-      .on("postgres_changes", { event: "*", schema: "public", table: "appointments", filter: `business_id=eq.${bizId}` }, () => load())
+      .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, () => load())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bizId]);
+  }, []);
 
-  const filtered = rows.filter((r) => {
-    if (statusFilter !== "All" && r.status !== statusFilter) return false;
-    if (q.trim()) {
-      const hay = `${r.caller_name ?? ""} ${r.caller_phone_e164 ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
-      if (!hay.includes(q.trim().toLowerCase())) return false;
-    }
-    return true;
-  });
-
-  function priceForRow(r: Row): number {
+  function priceForRow(r: ApptRow): number {
     const s = (r.status ?? "").toLowerCase();
-    if (s === "cancelled" || s === "inquiry") return 0; // never count inquiries
+    if (s === "cancelled" || s === "inquiry") return 0;
     const explicit = toNumber(r.price_usd, NaN);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
     if (r.service_id != null) {
       const svc = svcById.get(r.service_id);
       if (svc) return toNumber(svc.default_price_usd, 0);
     }
-    const ns = (r.normalized_service as any) ?? normalizeService(r.service_raw);
+    const ns = r.normalized_service ?? normalizeService(r.service_raw);
     return priceForFromNs(ns, toNumber(r.price_usd, 0));
   }
 
-  const rangeEnabled = view === "all";
-  const rangeBtnClass = (r: Range) =>
-    `btn-pill ${rangeEnabled && range === r ? "btn-pill--active" : ""} ${!rangeEnabled ? "opacity-50 cursor-not-allowed" : ""}`;
+  // Totals (bookings excludes inquiries & cancelled)
+  const totals = useMemo(() => {
+    const isBooking = (s: string | null | undefined) => {
+      const v = (s ?? "").toLowerCase();
+      return v === "booked" || v === "completed" || v === "rescheduled";
+    };
+    const revenue = rows.reduce((sum, r) => sum + priceForRow(r), 0);
+    return {
+      bookings: rows.filter(r => isBooking(r.status)).length,
+      revenue,
+      inquiries: rows.filter(r => (r.status ?? "").toLowerCase() === "inquiry").length,
+      rescheduled: rows.filter(r => (r.status ?? "").toLowerCase() === "rescheduled").length,
+      cancelled: rows.filter(r => (r.status ?? "").toLowerCase() === "cancelled").length,
+    };
+  }, [rows, svcById]);
+
+  // Bookings per day (ignore inquiries & cancelled)
+  const bookingsSeries = useMemo(() => {
+    const { start, end } = dateWindow(range);
+    const map = new Map<string, number>();
+    const d = new Date(start);
+    while (d <= end) { map.set(mmdd(d), 0); d.setDate(d.getDate() + 1); }
+    for (const r of rows) {
+      const v = (r.status ?? "").toLowerCase();
+      if (v === "inquiry" || v === "cancelled") continue;
+      const k = mmdd(new Date(r.start_ts));
+      if (map.has(k)) map.set(k, (map.get(k) ?? 0) + 1);
+    }
+    return Array.from(map.entries()).map(([date, count]) => ({ date, count }));
+  }, [rows, range]);
+
+  // Revenue by service (ignore inquiries & cancelled)
+  const revenueByService = useMemo(() => {
+    const sums = new Map<string, number>();
+    for (const r of rows) {
+      const v = (r.status ?? "").toLowerCase();
+      if (v === "inquiry" || v === "cancelled") continue;
+
+      const ns = r.normalized_service ?? normalizeService(r.service_raw);
+      let label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Other";
+      if (r.service_id != null) {
+        const svc = svcById.get(r.service_id);
+        label = svc?.name || label;
+      }
+      sums.set(label, (sums.get(label) ?? 0) + priceForRow(r));
+    }
+    return Array.from(sums.entries()).map(([service, revenue]) => ({ service, revenue }));
+  }, [rows, svcById]);
 
   return (
-    <div className="space-y-4">
-      {/* Top bar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button type="button" className={`btn-pill ${view === "today" ? "btn-pill--active" : ""}`} onClick={() => setView("today")}>Today</button>
-          <button type="button" className={`btn-pill ${view === "future" ? "btn-pill--active" : ""}`} onClick={() => setView("future")}>Future</button>
-          <button type="button" className={`btn-pill ${view === "all" ? "btn-pill--active" : ""}`} onClick={() => setView("all")}>All</button>
-
-          <button type="button" className={rangeBtnClass("7d")}  onClick={() => rangeEnabled && setRange("7d")}  aria-disabled={!rangeEnabled}>7d</button>
-          <button type="button" className={rangeBtnClass("30d")} onClick={() => rangeEnabled && setRange("30d")} aria-disabled={!rangeEnabled}>30d</button>
-          <button type="button" className={rangeBtnClass("90d")} onClick={() => rangeEnabled && setRange("90d")} aria-disabled={!rangeEnabled}>90d</button>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as StatusOpt)}
-            className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none [color-scheme:dark]"
-          >
-            {["All","Booked","Rescheduled","Cancelled","Completed","Inquiry"].map((s) => (
-              <option key={s} value={s} className="text-black bg-white">{s}</option>
-            ))}
-          </select>
-
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search name, phone, service"
-            className="px-3 py-2 rounded-xl bg-cx-bg border border-cx-border outline-none w-64"
-          />
-
-          <Link href="/appointments/new" className="btn-pill btn-pill--active">+ New</Link>
-        </div>
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        <StatCard title={`Bookings (${range})`} value={totals.bookings} />
+        <StatCard title={`Revenue (${range})`} value={fmtUSD(totals.revenue)} />
+        <StatCard title={`Inquiries (${range})`} value={totals.inquiries} />
+        <StatCard title={`Rescheduled (${range})`} value={totals.rescheduled} />
+        <StatCard title={`Cancelled (${range})`} value={totals.cancelled} />
       </div>
 
-      {/* Table */}
-      <div className="bg-cx-surface border border-cx-border rounded-2xl p-0 overflow-x-auto">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Charts.Bookings data={bookingsSeries} range={range} onRange={setRange} />
+        <Charts.Revenue data={revenueByService} range={range} onRange={setRange} />
+      </div>
+
+      <Recent rows={rows} priceForRow={priceForRow} />
+    </div>
+  );
+}
+
+function StatCard({ title, value }: { title: string; value: string | number }) {
+  return (
+    <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+      <div className="text-cx-muted text-sm mb-1">{title}</div>
+      <div className="text-2xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+/* ---- lightweight chart components (keeps your existing recharts RangePills) ---- */
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid,
+  ResponsiveContainer, BarChart, Bar
+} from "recharts";
+
+const Charts = {
+  Bookings({ data, range, onRange }: { data: any[]; range: Range; onRange: (r: Range) => void }) {
+    return (
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold">Bookings per day (last {range})</h3>
+          <RangePills value={range} onChange={onRange} />
+        </div>
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data}>
+              <CartesianGrid vertical={false} stroke="#1a1a1a" />
+              <XAxis dataKey="date" tickMargin={8} />
+              <YAxis allowDecimals={false} width={24} />
+              <Tooltip formatter={(v: any) => [`Bookings: ${v}`, ""]} />
+              <Line type="monotone" dataKey="count" stroke="#ffffff" dot={{ r: 3, fill: "#ffffff" }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  },
+  Revenue({ data, range, onRange }: { data: any[]; range: Range; onRange: (r: Range) => void }) {
+    return (
+      <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold">Revenue by service (last {range})</h3>
+          <RangePills value={range} onChange={onRange} />
+        </div>
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data}>
+              <CartesianGrid vertical={false} stroke="#1a1a1a" />
+              <XAxis dataKey="service" interval={0} tickMargin={12} />
+              <YAxis width={40} />
+              <Tooltip formatter={(v: any) => [fmtUSD(Number(v)), ""]} />
+              <Bar dataKey="revenue" fill="#ffffff" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    );
+  },
+};
+
+function Recent({ rows, priceForRow }: { rows: ApptRow[]; priceForRow: (r: ApptRow) => number }) {
+  return (
+    <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold">Recent appointments</h3>
+      </div>
+      <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="text-cx-muted">
             <tr className="text-left">
-              <th className="py-3 pl-4 pr-4">Date</th>
-              <th className="py-3 pr-4">Time</th>
-              <th className="py-3 pr-4">Service</th>
-              <th className="py-3 pr-4">Name</th>
-              <th className="py-3 pr-4">Phone</th>
-              <th className="py-3 pr-4">Status</th>
-              <th className="py-3 pr-4">Price</th>
-              <th className="py-3 pr-4"></th>
+              <th className="py-2 pr-4">Date</th>
+              <th className="py-2 pr-4">Time</th>
+              <th className="py-2 pr-4">Service</th>
+              <th className="py-2 pr-4">Name</th>
+              <th className="py-2 pr-4">Phone</th>
+              <th className="py-2 pr-4">Status</th>
+              <th className="py-2 pr-4">Price</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((r) => {
-              let svcLabel = r.service_raw || r.normalized_service || "—";
-              if (!svcLabel) {
-                const ns = (r.normalized_service as any) ?? normalizeService(r.service_raw);
-                svcLabel = serviceLabelFor(ns, r.service_raw) || "—";
-              }
+            {rows.slice(-10).map((r) => {
               const d = new Date(r.start_ts);
               const date = d.toLocaleDateString();
               const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-              const isInquiry = (r.status ?? "").toLowerCase() === "inquiry";
+              const ns = r.normalized_service ?? normalizeService(r.service_raw);
+              const svcLabel = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Service";
+              const s = (r.status ?? "Booked").toLowerCase();
+              const cls =
+                s === "booked" ? "text-emerald-400" :
+                s === "rescheduled" ? "text-amber-300" :
+                s === "cancelled" ? "text-rose-400" :
+                s === "completed" ? "text-zinc-300" :
+                s === "inquiry" ? "text-sky-300" : "text-cx-muted";
 
               return (
                 <tr key={r.id} className="border-t border-cx-border">
-                  <td className="py-2 pl-4 pr-4">{date}</td>
+                  <td className="py-2 pr-4">{date}</td>
                   <td className="py-2 pr-4">{time}</td>
                   <td className="py-2 pr-4">{svcLabel}</td>
-                  <td className="py-2 pr-4">{r.caller_name ?? "-"}</td>
-                  <td className="py-2 pr-4">{r.caller_phone_e164 ?? "-"}</td>
-                  <td className="py-2 pr-4"><StatusBadge status={r.status ?? "Booked"} /></td>
+                  <td className="py-2 pr-4">{r.caller_name ?? "—"}</td>
+                  <td className="py-2 pr-4">{r.caller_phone_e164 ?? "—"}</td>
+                  <td className={`py-2 pr-4 ${cls}`}>{r.status ?? "Booked"}</td>
                   <td className="py-2 pr-4">{fmtUSD(priceForRow(r))}</td>
-                  <td className="py-2 pr-4">
-                    {isInquiry && (
-                      <Link
-                        className="px-2 py-1 rounded-xl text-xs font-medium bg-sky-600/20 text-sky-300 border border-sky-700/40"
-                        href={{
-                          pathname: "/appointments/new",
-                          query: {
-                            name: r.caller_name ?? "",
-                            phone: (r.caller_phone_e164 ?? "").replace(/^\+1/, ""), // prefill US local
-                          },
-                        }}
-                      >
-                        Book →
-                      </Link>
-                    )}
-                  </td>
                 </tr>
               );
             })}
-            {!loading && filtered.length === 0 && (
+            {rows.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-8 text-center text-cx-muted">No results.</td>
-              </tr>
-            )}
-            {loading && (
-              <tr>
-                <td colSpan={8} className="py-8 text-center text-cx-muted">Loading…</td>
+                <td className="py-6 text-center text-cx-muted" colSpan={7}>No appointments in the selected range.</td>
               </tr>
             )}
           </tbody>
@@ -256,15 +294,4 @@ export default function AppointmentsPage() {
       </div>
     </div>
   );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const s = (status || "").toLowerCase();
-  let cls = "bg-white/10 text-white";
-  if (s === "booked")      cls = "bg-emerald-600/25 text-emerald-300 border border-emerald-700/40";
-  if (s === "rescheduled") cls = "bg-amber-600/25 text-amber-300 border border-amber-700/40";
-  if (s === "cancelled")   cls = "bg-rose-600/25 text-rose-300 border border-rose-700/40";
-  if (s === "completed")   cls = "bg-zinc-600/25 text-zinc-200 border border-zinc-700/40";
-  if (s === "inquiry")     cls = "bg-sky-600/25 text-sky-300 border border-sky-700/40";
-  return <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${cls}`}>{status}</span>;
 }
