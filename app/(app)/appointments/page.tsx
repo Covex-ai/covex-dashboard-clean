@@ -13,7 +13,7 @@ type StatusOpt = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed" | 
 type Row = {
   id: number;
   business_id: string;
-  start_ts: string;
+  start_ts: string | null; // <-- allow null for Inquiry rows
   end_ts: string | null;
   status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | "Inquiry" | null;
   service_raw: string | null;
@@ -120,24 +120,52 @@ export default function AppointmentsPage() {
     setLoading(true);
     setMsg(null);
 
+    const cols =
+      "id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text";
+
+    // SPECIAL CASE: Inquiry — ignore time window so rows without start_ts show up
+    if (statusFilter === "Inquiry") {
+      const [{ data: appts, error: aerr }, { data: svcs, error: serr }] = await Promise.all([
+        supabase
+          .from("appointments")
+          .select(cols)
+          .eq("business_id", biz.id)
+          .eq("status", "Inquiry")
+          .order("id", { ascending: false })
+          .limit(200),
+        supabase
+          .from("services")
+          .select("id,name,code,default_price_usd")
+          .eq("business_id", biz.id)
+          .order("name", { ascending: true }),
+      ]);
+
+      if (aerr) setMsg(aerr.message);
+      if (serr && !aerr) setMsg(serr.message);
+      setRows((appts as any) ?? []);
+      setServices((svcs as any) ?? []);
+      setLoading(false);
+      return;
+    }
+
+    // Normal statuses — respect the time window
     const { start, end } = windowFor(view, range);
 
-    const [apptsRes, svcsRes] = await Promise.all([
-      (view === "future"
-        ? supabase
-            .from("appointments")
-            .select("id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text")
-            .eq("business_id", biz.id)
-            .gte("start_ts", start.toISOString())
-            .order("start_ts", { ascending: true })
-        : supabase
-            .from("appointments")
-            .select("id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text")
-            .eq("business_id", biz.id)
-            .gte("start_ts", start.toISOString())
-            .lte("start_ts", end!.toISOString())
-            .order("start_ts", { ascending: true })
-      ),
+    let query = supabase
+      .from("appointments")
+      .select(cols)
+      .eq("business_id", biz.id);
+
+    if (view === "future") {
+      query = query.gte("start_ts", start.toISOString());
+    } else {
+      query = query.gte("start_ts", start.toISOString()).lte("start_ts", end!.toISOString());
+    }
+
+    query = query.order("start_ts", { ascending: true });
+
+    const [{ data: appts, error: aerr }, { data: svcs, error: serr }] = await Promise.all([
+      query,
       supabase
         .from("services")
         .select("id,name,code,default_price_usd")
@@ -145,13 +173,14 @@ export default function AppointmentsPage() {
         .order("name", { ascending: true }),
     ]);
 
-    if (apptsRes.error) setMsg(apptsRes.error.message);
-    setRows((apptsRes.data as any) ?? []);
-    setServices((svcsRes.data as any) ?? []);
+    if (aerr) setMsg(aerr.message);
+    if (serr && !aerr) setMsg(serr.message);
+    setRows((appts as any) ?? []);
+    setServices((svcs as any) ?? []);
     setLoading(false);
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [biz?.id, view, range]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [biz?.id, view, range, statusFilter]);
 
   // realtime: only my business rows
   useEffect(() => {
@@ -179,7 +208,8 @@ export default function AppointmentsPage() {
   });
 
   function priceForRow(r: Row): number {
-    if ((r.status ?? "").toLowerCase() === "cancelled") return 0;
+    const s = (r.status ?? "").toLowerCase();
+    if (s === "cancelled" || s === "inquiry") return 0; // <-- inquiries show $0
 
     const explicit = toNumber(r.price_usd, NaN);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
@@ -274,12 +304,12 @@ export default function AppointmentsPage() {
                 svcLabel = serviceLabelFor(ns, r.service_raw) || svcLabel;
               }
 
-              const d = new Date(r.start_ts);
-              const date = d.toLocaleDateString();
-              const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+              const d = r.start_ts ? new Date(r.start_ts) : null; // safe for Inquiry
+              const date = d ? d.toLocaleDateString() : "—";
+              const time = d ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
 
               return (
-                <tr key={r.id} className="border-top border-cx-border">
+                <tr key={r.id} className="border-t border-cx-border">
                   <td className="py-2 pl-4 pr-4">{date}</td>
                   <td className="py-2 pr-4">{time}</td>
                   <td className="py-2 pr-4">{svcLabel}</td>
@@ -320,6 +350,6 @@ function StatusBadge({ status }: { status: string }) {
   if (s === "rescheduled") bg = "bg-amber-600/25 text-amber-300 border border-amber-700/40";
   if (s === "cancelled")   bg = "bg-rose-600/25 text-rose-300 border border-rose-700/40";
   if (s === "completed")   bg = "bg-zinc-600/25 text-zinc-200 border border-zinc-700/40";
-  if (s === "inquiry")     bg = "bg-sky-600/25 text-sky-300 border border-sky-700/40"; // NEW
+  if (s === "inquiry")     bg = "bg-sky-600/25 text-sky-300 border border-sky-700/40";
   return <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${bg}`}>{status}</span>;
 }
