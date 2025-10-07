@@ -27,16 +27,19 @@ export default function ServicesListPage() {
 
   /* ---------------- helpers ---------------- */
 
-  // “New patient exam – 60m” -> “NEW_PATIENT_EXAM_60M”
-  function normalizeCode(s: string): string {
-    return s.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
-  }
-  function nextUniqueCode(desired: string, id: number, list: { id: number; code: string | null }[]) {
+  const normalizeCode = (s: string) =>
+    s.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+
+  // Ensure uniqueness BEFORE we send the update (avoids 23505)
+  function uniqueCode(desired: string, id: number) {
     const base = normalizeCode(desired);
-    const taken = new Set(list.filter(r => r.id !== id).map(r => (r.code ?? "").trim()));
-    let out = base, i = 2;
-    while (taken.has(out)) out = `${base}_${i++}`;
-    return out;
+    const taken = new Set(
+      rows.filter((r) => r.id !== id).map((r) => (r.code ?? "").trim()).filter(Boolean)
+    );
+    if (!taken.has(base)) return base;
+    let i = 2;
+    while (taken.has(`${base}_${i}`)) i++;
+    return `${base}_${i}`;
   }
 
   async function loadBizId() {
@@ -66,7 +69,6 @@ export default function ServicesListPage() {
     if (!bizId) return;
     load();
 
-    // realtime only for my business rows
     const ch = supabase
       .channel("rt-services")
       .on(
@@ -75,69 +77,64 @@ export default function ServicesListPage() {
         () => load()
       )
       .subscribe();
-
     return () => { supabase.removeChannel(ch); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bizId]);
 
   function onLocalEdit(id: number, field: keyof ServiceRow, value: any) {
-    setRows(prev => prev.map(r => (r.id === id ? { ...r, [field]: value } : r)));
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
   }
 
   async function savePatch(id: number, patch: Partial<ServiceRow>) {
     setSavingId(id);
     setMsg(null);
-
-    // First attempt
-    let { error } = await supabase.from("services").update(patch).eq("id", id);
-    // If duplicate unique violation and we were changing code, auto-fix & retry
-    if (error && (error as any).code === "23505" && patch.code != null) {
-      const code2 = nextUniqueCode(String(patch.code), id, rows);
-      const retry = await supabase.from("services").update({ ...patch, code: code2 }).eq("id", id);
-      if (!retry.error) {
-        setRows(prev => prev.map(r => (r.id === id ? { ...r, code: code2 } : r)));
-        setMsg(`Code already used. Saved as ${code2}.`);
-        setSavingId(null);
-        return;
-      }
-      error = retry.error;
-    }
-
+    const { error } = await supabase.from("services").update(patch).eq("id", id).eq("business_id", bizId!);
     setSavingId(null);
     if (error) {
       setMsg(error.message);
-      await load(); // revert local state to server truth
+      await load(); // revert to server truth
     }
   }
 
-  // DELETE with FK fallback (appointments.service_id -> NULL), no prompt
+  // Hard-delete with FK-friendly fallback (appointments.service_id -> NULL), then refresh
   async function handleDelete(row: ServiceRow) {
     setMsg(null);
 
-    // optimistic UI
+    // Optimistic UI
     const prev = rows;
-    setRows(prev.filter(r => r.id !== row.id));
+    setRows(prev.filter((r) => r.id !== row.id));
 
-    // Try delete
-    let del = await supabase.from("services").delete().eq("id", row.id);
-    // If FK violation, null-out appointments.service_id then retry
+    // 1) Try to delete
+    let del = await supabase
+      .from("services")
+      .delete()
+      .eq("id", row.id)
+      .eq("business_id", bizId!);
+
+    // 2) If FK blocks it, null out references and retry
     if (del.error && (del.error as any).code === "23503") {
-      const fix = await supabase.from("appointments").update({ service_id: null }).eq("service_id", row.id);
-      if (!fix.error) del = await supabase.from("services").delete().eq("id", row.id);
+      const fix = await supabase
+        .from("appointments")
+        .update({ service_id: null })
+        .eq("service_id", row.id)
+        .eq("business_id", bizId!);
+      if (!fix.error) {
+        del = await supabase.from("services").delete().eq("id", row.id).eq("business_id", bizId!);
+      }
     }
 
     if (del.error) {
-      // rollback UI and show error
-      setRows(prev);
+      setRows(prev); // rollback
       setMsg(del.error.message);
+    } else {
+      await load(); // ensure it’s really gone
     }
   }
 
   async function handleCreate() {
-    if (!bizId) { setMsg("No business_id found. Reload the page and try again."); return; }
+    if (!bizId) { setMsg("No business_id found. Reload and try again."); return; }
     setCreating(true);
     setMsg(null);
-
     const { data, error } = await supabase
       .from("services")
       .insert([{
@@ -147,15 +144,14 @@ export default function ServicesListPage() {
         active: true,
         slot_minutes: 60,
         event_type_id: null,
-        sort_order: (rows[0]?.sort_order ?? 0) - 1, // bubble to top
+        sort_order: (rows[0]?.sort_order ?? 0) - 1,
       }])
       .select("id,name,code,active,slot_minutes,event_type_id,sort_order")
       .single();
-
     setCreating(false);
     if (error) { setMsg(error.message); return; }
     if (data) {
-      setRows(prev => [data as ServiceRow, ...prev]);
+      setRows((prev) => [data as ServiceRow, ...prev]);
       setTimeout(() => newNameRef.current?.focus(), 50);
     }
   }
@@ -164,7 +160,6 @@ export default function ServicesListPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Link href="/settings" className="btn-pill">← Settings</Link>
@@ -175,7 +170,6 @@ export default function ServicesListPage() {
         </button>
       </div>
 
-      {/* Table */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <p className="text-sm text-cx-muted mb-4">
           Edit <span className="text-white font-medium">Name</span> and <span className="text-white font-medium">Code</span>,
@@ -201,7 +195,7 @@ export default function ServicesListPage() {
                 const isNewTopRow = idx === 0 && r.name === "New service";
                 return (
                   <tr key={r.id} className="border-top border-cx-border">
-                    {/* Name */}
+                    {/* Name (editable) */}
                     <td className="py-2 pr-4">
                       <input
                         ref={isNewTopRow ? newNameRef : undefined}
@@ -210,7 +204,9 @@ export default function ServicesListPage() {
                         onBlur={async (e) => {
                           const nextName = e.target.value.trim() || "Untitled service";
                           const patch: Partial<ServiceRow> = { name: nextName };
-                          if (!r.code || !r.code.trim()) patch.code = nextUniqueCode(nextName, r.id, rows);
+                          if (!r.code || !r.code.trim()) {
+                            patch.code = uniqueCode(nextName, r.id); // generate unique BEFORE saving
+                          }
                           await savePatch(r.id, patch);
                         }}
                         onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
@@ -219,13 +215,13 @@ export default function ServicesListPage() {
                       />
                     </td>
 
-                    {/* Code */}
+                    {/* Code (auto-unique) */}
                     <td className="py-2 pr-4">
                       <input
                         value={r.code ?? ""}
                         onChange={(e) => onLocalEdit(r.id, "code", e.target.value.toUpperCase())}
                         onBlur={async (e) => {
-                          const finalCode = nextUniqueCode(e.target.value, r.id, rows);
+                          const finalCode = uniqueCode(e.target.value, r.id);
                           if (finalCode !== normalizeCode(e.target.value)) {
                             setMsg(`Code already used. Saved as ${finalCode}.`);
                           }
@@ -237,7 +233,7 @@ export default function ServicesListPage() {
                       />
                     </td>
 
-                    {/* Active toggle */}
+                    {/* Active (toggle) */}
                     <td className="py-2 pr-4">
                       <button
                         onClick={() => { onLocalEdit(r.id, "active", !r.active); savePatch(r.id, { active: !r.active }); }}
@@ -250,7 +246,7 @@ export default function ServicesListPage() {
                       </button>
                     </td>
 
-                    {/* Slot (minutes) */}
+                    {/* Slot minutes */}
                     <td className="py-2 pr-4">
                       <input
                         type="number"
@@ -263,7 +259,7 @@ export default function ServicesListPage() {
                       />
                     </td>
 
-                    {/* Cal.com event type ID */}
+                    {/* Cal event type ID */}
                     <td className="py-2 pr-4">
                       <input
                         type="number"
