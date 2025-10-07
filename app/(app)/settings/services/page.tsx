@@ -22,6 +22,7 @@ export default function ServicesListPage() {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const newNameRef = useRef<HTMLInputElement | null>(null);
 
@@ -95,23 +96,41 @@ export default function ServicesListPage() {
     const { error } = await supabase.from("services").update(patch).eq("id", id);
     setSavingId(null);
     if (error) {
-      // Common errors to surface nicely (e.g., unique code per business)
       setMsg(error.message);
       await load(); // revert local state to server truth
     }
   }
 
+  // 🚫 No confirm prompt; do the work and show any errors inline.
+  // ✅ Also unlink appointments.service_id -> null first so the delete succeeds.
   async function handleDelete(row: ServiceRow) {
+    if (!bizId) return;
     setMsg(null);
-    const ok = confirm(`Delete the service “${row.name}”? This cannot be undone.`);
-    if (!ok) return;
+    setDeletingId(row.id);
 
-    const { error } = await supabase.from("services").delete().eq("id", row.id);
-    if (error) {
-      // If there’s a FK constraint (appointments -> services), backend may reject.
-      setMsg(error.message);
+    // 1) Unlink any appointments that reference this service (same business)
+    const { error: unlinkErr } = await supabase
+      .from("appointments")
+      .update({ service_id: null })
+      .eq("business_id", bizId)
+      .eq("service_id", row.id);
+
+    if (unlinkErr) {
+      setDeletingId(null);
+      setMsg(`Could not unlink appointments: ${unlinkErr.message}`);
       return;
     }
+
+    // 2) Delete the service
+    const { error: delErr } = await supabase.from("services").delete().eq("id", row.id);
+
+    setDeletingId(null);
+    if (delErr) {
+      setMsg(delErr.message);
+      return;
+    }
+
+    // 3) Optimistically remove from UI
     setRows(prev => prev.filter(r => r.id !== row.id));
   }
 
@@ -123,7 +142,6 @@ export default function ServicesListPage() {
     setCreating(true);
     setMsg(null);
 
-    // Create with sensible defaults; code is derived from name on first rename if blank
     const { data, error } = await supabase
       .from("services")
       .insert([
@@ -147,7 +165,6 @@ export default function ServicesListPage() {
     }
     if (data) {
       setRows(prev => [data as ServiceRow, ...prev]);
-      // Focus the new name input for quick editing
       setTimeout(() => newNameRef.current?.focus(), 50);
     }
   }
@@ -192,7 +209,7 @@ export default function ServicesListPage() {
               {rows.map((r, idx) => {
                 const isNewTopRow = idx === 0 && r.name === "New service";
                 return (
-                  <tr key={r.id} className="border-top border-cx-border">
+                  <tr key={r.id} className="border-t border-cx-border">
                     {/* Name (editable) */}
                     <td className="py-2 pr-4">
                       <input
@@ -202,7 +219,6 @@ export default function ServicesListPage() {
                         onBlur={async (e) => {
                           const nextName = e.target.value.trim() || "Untitled service";
                           const patch: Partial<ServiceRow> = { name: nextName };
-                          // if code is empty/null, auto-generate from new name
                           if (!r.code || !r.code.trim()) patch.code = normalizeCode(nextName);
                           await savePatch(r.id, patch);
                         }}
@@ -240,9 +256,7 @@ export default function ServicesListPage() {
                           savePatch(r.id, { active: !r.active });
                         }}
                         className={`px-2 py-1 rounded-xl text-xs font-medium ${
-                          r.active
-                            ? "bg-white/10 text-white"
-                            : "bg-white/5 text-cx-muted border border-cx-border"
+                          r.active ? "bg-white/10 text-white" : "bg-white/5 text-cx-muted border border-cx-border"
                         }`}
                         aria-pressed={r.active}
                       >
@@ -269,16 +283,10 @@ export default function ServicesListPage() {
                         type="number"
                         value={r.event_type_id ?? ""}
                         onChange={(e) =>
-                          onLocalEdit(
-                            r.id,
-                            "event_type_id",
-                            e.target.value ? Number(e.target.value) : null
-                          )
+                          onLocalEdit(r.id, "event_type_id", e.target.value ? Number(e.target.value) : null)
                         }
                         onBlur={(e) =>
-                          savePatch(r.id, {
-                            event_type_id: e.target.value ? Number(e.target.value) : null,
-                          })
+                          savePatch(r.id, { event_type_id: e.target.value ? Number(e.target.value) : null })
                         }
                         placeholder="e.g. 3274310"
                         className="w-40 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
@@ -288,15 +296,18 @@ export default function ServicesListPage() {
                     {/* Actions */}
                     <td className="py-2 pr-4">
                       <div className="flex items-center gap-3">
-                        {savingId === r.id && (
-                          <span className="text-xs text-cx-muted" aria-live="polite">Saving…</span>
-                        )}
+                        {savingId === r.id && <span className="text-xs text-cx-muted" aria-live="polite">Saving…</span>}
                         <button
                           onClick={() => handleDelete(r)}
-                          className="px-2 py-1 rounded-xl text-xs font-medium bg-rose-600/20 text-rose-300 border border-rose-700/40"
+                          disabled={deletingId === r.id}
+                          className={`px-2 py-1 rounded-xl text-xs font-medium border ${
+                            deletingId === r.id
+                              ? "bg-rose-800/30 text-rose-200 border-rose-800/60 cursor-not-allowed"
+                              : "bg-rose-600/20 text-rose-300 border-rose-700/40"
+                          }`}
                           title="Delete service"
                         >
-                          Delete
+                          {deletingId === r.id ? "Deleting…" : "Delete"}
                         </button>
                       </div>
                     </td>
