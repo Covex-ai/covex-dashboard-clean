@@ -22,28 +22,26 @@ export default function ServicesListPage() {
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const newNameRef = useRef<HTMLInputElement | null>(null);
 
   /* ---------------- helpers ---------------- */
 
-  // e.g. “New patient exam – 60m” -> “NEW_PATIENT_EXAM_60M”
+  // “New patient exam – 60m” -> “NEW_PATIENT_EXAM_60M”
   function normalizeCode(s: string): string {
-    return s
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .slice(0, 40);
+    return s.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+  }
+  function nextUniqueCode(desired: string, id: number, list: { id: number; code: string | null }[]) {
+    const base = normalizeCode(desired);
+    const taken = new Set(list.filter(r => r.id !== id).map(r => (r.code ?? "").trim()));
+    let out = base, i = 2;
+    while (taken.has(out)) out = `${base}_${i++}`;
+    return out;
   }
 
   async function loadBizId() {
     const { data, error } = await supabase.from("profiles").select("business_id").maybeSingle();
-    if (error) {
-      setMsg(error.message);
-      return;
-    }
+    if (error) { setMsg(error.message); return; }
     setBizId((data?.business_id as string) ?? null);
   }
 
@@ -62,9 +60,7 @@ export default function ServicesListPage() {
     setLoading(false);
   }
 
-  useEffect(() => {
-    loadBizId();
-  }, []);
+  useEffect(() => { loadBizId(); }, []);
 
   useEffect(() => {
     if (!bizId) return;
@@ -80,9 +76,7 @@ export default function ServicesListPage() {
       )
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(ch);
-    };
+    return () => { supabase.removeChannel(ch); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bizId]);
 
@@ -93,7 +87,22 @@ export default function ServicesListPage() {
   async function savePatch(id: number, patch: Partial<ServiceRow>) {
     setSavingId(id);
     setMsg(null);
-    const { error } = await supabase.from("services").update(patch).eq("id", id);
+
+    // First attempt
+    let { error } = await supabase.from("services").update(patch).eq("id", id);
+    // If duplicate unique violation and we were changing code, auto-fix & retry
+    if (error && (error as any).code === "23505" && patch.code != null) {
+      const code2 = nextUniqueCode(String(patch.code), id, rows);
+      const retry = await supabase.from("services").update({ ...patch, code: code2 }).eq("id", id);
+      if (!retry.error) {
+        setRows(prev => prev.map(r => (r.id === id ? { ...r, code: code2 } : r)));
+        setMsg(`Code already used. Saved as ${code2}.`);
+        setSavingId(null);
+        return;
+      }
+      error = retry.error;
+    }
+
     setSavingId(null);
     if (error) {
       setMsg(error.message);
@@ -101,68 +110,50 @@ export default function ServicesListPage() {
     }
   }
 
-  // 🚫 No confirm prompt; do the work and show any errors inline.
-  // ✅ Also unlink appointments.service_id -> null first so the delete succeeds.
+  // DELETE with FK fallback (appointments.service_id -> NULL), no prompt
   async function handleDelete(row: ServiceRow) {
-    if (!bizId) return;
     setMsg(null);
-    setDeletingId(row.id);
 
-    // 1) Unlink any appointments that reference this service (same business)
-    const { error: unlinkErr } = await supabase
-      .from("appointments")
-      .update({ service_id: null })
-      .eq("business_id", bizId)
-      .eq("service_id", row.id);
+    // optimistic UI
+    const prev = rows;
+    setRows(prev.filter(r => r.id !== row.id));
 
-    if (unlinkErr) {
-      setDeletingId(null);
-      setMsg(`Could not unlink appointments: ${unlinkErr.message}`);
-      return;
+    // Try delete
+    let del = await supabase.from("services").delete().eq("id", row.id);
+    // If FK violation, null-out appointments.service_id then retry
+    if (del.error && (del.error as any).code === "23503") {
+      const fix = await supabase.from("appointments").update({ service_id: null }).eq("service_id", row.id);
+      if (!fix.error) del = await supabase.from("services").delete().eq("id", row.id);
     }
 
-    // 2) Delete the service
-    const { error: delErr } = await supabase.from("services").delete().eq("id", row.id);
-
-    setDeletingId(null);
-    if (delErr) {
-      setMsg(delErr.message);
-      return;
+    if (del.error) {
+      // rollback UI and show error
+      setRows(prev);
+      setMsg(del.error.message);
     }
-
-    // 3) Optimistically remove from UI
-    setRows(prev => prev.filter(r => r.id !== row.id));
   }
 
   async function handleCreate() {
-    if (!bizId) {
-      setMsg("No business_id found. Reload the page and try again.");
-      return;
-    }
+    if (!bizId) { setMsg("No business_id found. Reload the page and try again."); return; }
     setCreating(true);
     setMsg(null);
 
     const { data, error } = await supabase
       .from("services")
-      .insert([
-        {
-          business_id: bizId,
-          name: "New service",
-          code: null,
-          active: true,
-          slot_minutes: 60,
-          event_type_id: null,
-          sort_order: (rows[0]?.sort_order ?? 0) - 1, // bubble to top
-        },
-      ])
+      .insert([{
+        business_id: bizId,
+        name: "New service",
+        code: null,
+        active: true,
+        slot_minutes: 60,
+        event_type_id: null,
+        sort_order: (rows[0]?.sort_order ?? 0) - 1, // bubble to top
+      }])
       .select("id,name,code,active,slot_minutes,event_type_id,sort_order")
       .single();
 
     setCreating(false);
-    if (error) {
-      setMsg(error.message);
-      return;
-    }
+    if (error) { setMsg(error.message); return; }
     if (data) {
       setRows(prev => [data as ServiceRow, ...prev]);
       setTimeout(() => newNameRef.current?.focus(), 50);
@@ -209,8 +200,8 @@ export default function ServicesListPage() {
               {rows.map((r, idx) => {
                 const isNewTopRow = idx === 0 && r.name === "New service";
                 return (
-                  <tr key={r.id} className="border-t border-cx-border">
-                    {/* Name (editable) */}
+                  <tr key={r.id} className="border-top border-cx-border">
+                    {/* Name */}
                     <td className="py-2 pr-4">
                       <input
                         ref={isNewTopRow ? newNameRef : undefined}
@@ -219,42 +210,37 @@ export default function ServicesListPage() {
                         onBlur={async (e) => {
                           const nextName = e.target.value.trim() || "Untitled service";
                           const patch: Partial<ServiceRow> = { name: nextName };
-                          if (!r.code || !r.code.trim()) patch.code = normalizeCode(nextName);
+                          if (!r.code || !r.code.trim()) patch.code = nextUniqueCode(nextName, r.id, rows);
                           await savePatch(r.id, patch);
                         }}
-                        onKeyDown={async (e) => {
-                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                         className="w-64 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
                         placeholder="Service name"
                       />
                     </td>
 
-                    {/* Code (editable, uppercase) */}
+                    {/* Code */}
                     <td className="py-2 pr-4">
                       <input
                         value={r.code ?? ""}
                         onChange={(e) => onLocalEdit(r.id, "code", e.target.value.toUpperCase())}
                         onBlur={async (e) => {
-                          const raw = e.target.value.trim();
-                          const next = raw ? normalizeCode(raw) : null;
-                          await savePatch(r.id, { code: next });
+                          const finalCode = nextUniqueCode(e.target.value, r.id, rows);
+                          if (finalCode !== normalizeCode(e.target.value)) {
+                            setMsg(`Code already used. Saved as ${finalCode}.`);
+                          }
+                          await savePatch(r.id, { code: finalCode });
                         }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                         placeholder="E.g. ACUTE_30"
                         className="w-56 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none uppercase tracking-wide"
                       />
                     </td>
 
-                    {/* Active (toggle) */}
+                    {/* Active toggle */}
                     <td className="py-2 pr-4">
                       <button
-                        onClick={() => {
-                          onLocalEdit(r.id, "active", !r.active);
-                          savePatch(r.id, { active: !r.active });
-                        }}
+                        onClick={() => { onLocalEdit(r.id, "active", !r.active); savePatch(r.id, { active: !r.active }); }}
                         className={`px-2 py-1 rounded-xl text-xs font-medium ${
                           r.active ? "bg-white/10 text-white" : "bg-white/5 text-cx-muted border border-cx-border"
                         }`}
@@ -264,7 +250,7 @@ export default function ServicesListPage() {
                       </button>
                     </td>
 
-                    {/* Slot minutes */}
+                    {/* Slot (minutes) */}
                     <td className="py-2 pr-4">
                       <input
                         type="number"
@@ -282,12 +268,8 @@ export default function ServicesListPage() {
                       <input
                         type="number"
                         value={r.event_type_id ?? ""}
-                        onChange={(e) =>
-                          onLocalEdit(r.id, "event_type_id", e.target.value ? Number(e.target.value) : null)
-                        }
-                        onBlur={(e) =>
-                          savePatch(r.id, { event_type_id: e.target.value ? Number(e.target.value) : null })
-                        }
+                        onChange={(e) => onLocalEdit(r.id, "event_type_id", e.target.value ? Number(e.target.value) : null)}
+                        onBlur={(e) => savePatch(r.id, { event_type_id: e.target.value ? Number(e.target.value) : null })}
                         placeholder="e.g. 3274310"
                         className="w-40 px-3 py-1.5 rounded-xl bg-cx-bg border border-cx-border outline-none"
                       />
@@ -299,15 +281,10 @@ export default function ServicesListPage() {
                         {savingId === r.id && <span className="text-xs text-cx-muted" aria-live="polite">Saving…</span>}
                         <button
                           onClick={() => handleDelete(r)}
-                          disabled={deletingId === r.id}
-                          className={`px-2 py-1 rounded-xl text-xs font-medium border ${
-                            deletingId === r.id
-                              ? "bg-rose-800/30 text-rose-200 border-rose-800/60 cursor-not-allowed"
-                              : "bg-rose-600/20 text-rose-300 border-rose-700/40"
-                          }`}
+                          className="px-2 py-1 rounded-xl text-xs font-medium bg-rose-600/20 text-rose-300 border border-rose-700/40"
                           title="Delete service"
                         >
-                          {deletingId === r.id ? "Deleting…" : "Delete"}
+                          Delete
                         </button>
                       </div>
                     </td>
@@ -316,18 +293,10 @@ export default function ServicesListPage() {
               })}
 
               {rows.length === 0 && !loading && (
-                <tr>
-                  <td className="py-6 text-center text-cx-muted" colSpan={6}>
-                    No services found.
-                  </td>
-                </tr>
+                <tr><td className="py-6 text-center text-cx-muted" colSpan={6}>No services found.</td></tr>
               )}
               {loading && (
-                <tr>
-                  <td className="py-6 text-center text-cx-muted" colSpan={6}>
-                    Loading…
-                  </td>
-                </tr>
+                <tr><td className="py-6 text-center text-cx-muted" colSpan={6}>Loading…</td></tr>
               )}
             </tbody>
           </table>
