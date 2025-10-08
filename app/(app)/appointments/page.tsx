@@ -13,7 +13,7 @@ type StatusOpt = "All" | "Booked" | "Rescheduled" | "Cancelled" | "Completed" | 
 type Row = {
   id: number;
   business_id: string;
-  start_ts: string | null; // <-- allow null for Inquiry rows
+  start_ts: string | null;
   end_ts: string | null;
   status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | "Inquiry" | null;
   service_raw: string | null;
@@ -29,7 +29,7 @@ type ServiceRow = {
   id: number;
   name: string;
   code: string | null;
-  default_price_usd?: number | string; // keep optional for safety with older schema
+  default_price_usd?: number | string;
 };
 
 type BizRow = { id: string; is_mobile: boolean };
@@ -53,6 +53,8 @@ function windowFor(view: View, range: Range) {
   const start = dayStart(new Date(todayS.getTime() - (days - 1) * 86400000));
   return { start, end: todayE };
 }
+const sameStatus = (a?: string | null, b?: string | null) =>
+  (a ?? "").trim().toLowerCase() === (b ?? "").trim().toLowerCase();
 
 /* ===================================================== */
 export default function AppointmentsPage() {
@@ -123,46 +125,25 @@ export default function AppointmentsPage() {
     const cols =
       "id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text";
 
-    // SPECIAL CASE: Inquiry — ignore time window so rows without start_ts show up
-    if (statusFilter === "Inquiry") {
-      const [{ data: appts, error: aerr }, { data: svcs, error: serr }] = await Promise.all([
-        supabase
-          .from("appointments")
-          .select(cols)
-          .eq("business_id", biz.id)
-          .eq("status", "Inquiry")
-          .order("id", { ascending: false })
-          .limit(200),
-        supabase
-          .from("services")
-          .select("id,name,code,default_price_usd")
-          .eq("business_id", biz.id)
-          .order("name", { ascending: true }),
-      ]);
-
-      if (aerr) setMsg(aerr.message);
-      if (serr && !aerr) setMsg(serr.message);
-      setRows((appts as any) ?? []);
-      setServices((svcs as any) ?? []);
-      setLoading(false);
-      return;
-    }
-
-    // Normal statuses — respect the time window
     const { start, end } = windowFor(view, range);
+    const startIso = start.toISOString();
+    const endIso = end?.toISOString();
 
+    // Always include Inquiries (they may have null start_ts) OR time-windowed appts
+    // - future: Inquiry OR start_ts >= start
+    // - today/all: Inquiry OR (start_ts between start and end)
     let query = supabase
       .from("appointments")
       .select(cols)
       .eq("business_id", biz.id);
 
     if (view === "future") {
-      query = query.gte("start_ts", start.toISOString());
+      query = query.or(`status.ilike.inquiry%,start_ts.gte.${startIso}`);
     } else {
-      query = query.gte("start_ts", start.toISOString()).lte("start_ts", end!.toISOString());
+      query = query.or(`status.ilike.inquiry%,and(start_ts.gte.${startIso},start_ts.lte.${endIso})`);
     }
 
-    query = query.order("start_ts", { ascending: true });
+    query = query.order("start_ts", { ascending: true }).limit(500);
 
     const [{ data: appts, error: aerr }, { data: svcs, error: serr }] = await Promise.all([
       query,
@@ -180,7 +161,7 @@ export default function AppointmentsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [biz?.id, view, range, statusFilter]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [biz?.id, view, range]);
 
   // realtime: only my business rows
   useEffect(() => {
@@ -199,7 +180,7 @@ export default function AppointmentsPage() {
 
   /* ---------- client filters + pricing helpers ---------- */
   const filtered = rows.filter((r) => {
-    if (statusFilter !== "All" && r.status !== statusFilter) return false;
+    if (statusFilter !== "All" && !sameStatus(r.status ?? "", statusFilter)) return false;
     if (q.trim()) {
       const hay = `${r.caller_name ?? ""} ${r.caller_phone_e164 ?? ""} ${r.service_raw ?? ""}`.toLowerCase();
       if (!hay.includes(q.trim().toLowerCase())) return false;
@@ -209,7 +190,7 @@ export default function AppointmentsPage() {
 
   function priceForRow(r: Row): number {
     const s = (r.status ?? "").toLowerCase();
-    if (s === "cancelled" || s === "inquiry") return 0; // <-- inquiries show $0
+    if (s === "cancelled" || s === "inquiry") return 0;
 
     const explicit = toNumber(r.price_usd, NaN);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
@@ -294,7 +275,6 @@ export default function AppointmentsPage() {
           </thead>
           <tbody>
             {filtered.map((r) => {
-              // label prefer service record if present
               let svcLabel = r.service_raw || r.normalized_service || "Service";
               if (r.service_id != null) {
                 const svc = svcById.get(r.service_id);
@@ -304,7 +284,7 @@ export default function AppointmentsPage() {
                 svcLabel = serviceLabelFor(ns, r.service_raw) || svcLabel;
               }
 
-              const d = r.start_ts ? new Date(r.start_ts) : null; // safe for Inquiry
+              const d = r.start_ts ? new Date(r.start_ts) : null;
               const date = d ? d.toLocaleDateString() : "—";
               const time = d ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
 
