@@ -9,18 +9,10 @@ import {
 import RangePills from "@/components/RangePills";
 import { normalizeService, priceFor as priceForFromNs, serviceLabelFor, type NormalizedService } from "@/lib/pricing";
 
-function fmtUSD(n: number) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
-}
-function toNumber(x: unknown, fallback = 0): number {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
-}
-function mmdd(d: Date) {
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${mm}-${dd}`;
-}
+function fmtUSD(n: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0); }
+function toNumber(x: unknown, fallback = 0): number { const n = Number(x); return Number.isFinite(n) ? n : fallback; }
+function mmdd(d: Date) { const mm = String(d.getMonth() + 1).padStart(2, "0"); const dd = String(d.getDate()).padStart(2, "0"); return `${mm}-${dd}`; }
+
 type Range = "7d" | "30d" | "90d";
 type BizRow = { id: string; is_mobile: boolean };
 
@@ -29,7 +21,7 @@ type ApptRow = {
   business_id: string;
   start_ts: string;
   end_ts: string | null;
-  status: "Booked" | "Rescheduled" | "Cancelled" | "Completed" | string | null;
+  status: string | null;
   service_raw: string | null;
   normalized_service: NormalizedService | null;
   price_usd: number | string | null;
@@ -42,8 +34,9 @@ type ApptRow = {
 type ServiceRow = {
   id: number;
   name: string;
-  code: string;
-  default_price_usd: number | string;
+  code: string | null;
+  default_price_usd: number | string | null;
+  active?: boolean | null;
 };
 
 export default function DashboardPage() {
@@ -72,14 +65,17 @@ export default function DashboardPage() {
   useEffect(() => {
     let unsub: (() => void) | undefined;
     (async () => {
-      const { data } = await supabase.from("businesses").select("id,is_mobile").maybeSingle<BizRow>();
-      if (data) setBiz(data);
-      if (data?.id) {
+      const { data: prof } = await supabase.from("profiles").select("business_id").maybeSingle();
+      const business_id = (prof as any)?.business_id;
+      if (!business_id) return;
+      const { data: bizRow } = await supabase.from("businesses").select("id,is_mobile").eq("id", business_id).maybeSingle<BizRow>();
+      if (bizRow) setBiz(bizRow);
+      if (business_id) {
         const ch = supabase
           .channel("rt-biz-overview")
           .on(
             "postgres_changes",
-            { event: "UPDATE", schema: "public", table: "businesses", filter: `id=eq.${data.id}` },
+            { event: "UPDATE", schema: "public", table: "businesses", filter: `id=eq.${business_id}` },
             payload => setBiz(prev => prev ? { ...prev, is_mobile: !!(payload.new as any)?.is_mobile } : (payload.new as BizRow))
           )
           .subscribe();
@@ -98,15 +94,13 @@ export default function DashboardPage() {
         .from("appointments")
         .select("id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text")
         .eq("business_id", biz.id)
-        .gte("start_ts", start.toISOString())
-        .lte("start_ts", end.toISOString())
+        .or(`status.ilike.inquiry%,and(start_ts.gte.${start.toISOString()},start_ts.lte.${end.toISOString()})`)
         .order("start_ts", { ascending: true }),
       supabase
         .from("services")
-        .select("id,name,code,default_price_usd")
+        .select("id,name,code,default_price_usd,active")
         .eq("business_id", biz.id)
         .order("active", { ascending: false })
-        .order("sort_order", { ascending: true, nullsFirst: false })
         .order("name", { ascending: true }),
     ]);
 
@@ -130,7 +124,8 @@ export default function DashboardPage() {
   }, [biz?.id]);
 
   function priceForRow(row: ApptRow): number {
-    if ((row.status ?? "").toLowerCase() === "cancelled") return 0;
+    const status = (row.status ?? "").toLowerCase();
+    if (status === "cancelled" || status === "inquiry") return 0;
     const explicit = toNumber(row.price_usd, NaN);
     if (Number.isFinite(explicit) && explicit > 0) return explicit;
     if (row.service_id != null) {
@@ -143,8 +138,9 @@ export default function DashboardPage() {
 
   const totals = useMemo(() => {
     const revenue = rows.reduce((sum, r) => sum + priceForRow(r), 0);
+    const bookings = rows.filter(r => (r.status ?? "").toLowerCase() !== "inquiry").length; // don't count inquiries as bookings
     return {
-      bookings: rows.length,
+      bookings,
       revenue,
       rescheduled: rows.filter((r) => (r.status || "").toLowerCase() === "rescheduled").length,
       cancelled: rows.filter((r) => (r.status || "").toLowerCase() === "cancelled").length,
@@ -155,11 +151,9 @@ export default function DashboardPage() {
     const { start, end } = dateWindow(range);
     const map = new Map<string, number>();
     const d = new Date(start);
-    while (d <= end) {
-      map.set(mmdd(d), 0);
-      d.setDate(d.getDate() + 1);
-    }
+    while (d <= end) { map.set(mmdd(d), 0); d.setDate(d.getDate() + 1); }
     for (const r of rows) {
+      if ((r.status ?? "").toLowerCase() === "inquiry") continue;
       const k = mmdd(new Date(r.start_ts));
       if (map.has(k)) map.set(k, (map.get(k) ?? 0) + 1);
     }
@@ -167,21 +161,32 @@ export default function DashboardPage() {
   }, [rows, range]);
 
   const revenueByService = useMemo(() => {
+    // seed with all services so the chart/table never looks broken/blank
     const sums = new Map<string, number>();
+    for (const s of services) sums.set(s.name || s.code || "Service", 0);
+
+    let sawUnassigned = false;
+
     for (const r of rows) {
-      if ((r.status || "").toLowerCase() === "cancelled") continue;
-      const ns = r.normalized_service ?? normalizeService(r.service_raw);
+      const status = (r.status ?? "").toLowerCase();
+      if (status === "cancelled" || status === "inquiry") continue;
+
       let label: string;
-      if (r.service_id != null) {
-        const svc = svcById.get(r.service_id);
-        label = svc?.name || serviceLabelFor(ns, r.service_raw) || "Other";
+      if (r.service_id != null && svcById.has(r.service_id)) {
+        const svc = svcById.get(r.service_id)!;
+        label = svc.name || svc.code || "Service";
       } else {
-        label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Other";
+        const ns = r.normalized_service ?? normalizeService(r.service_raw);
+        label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Unassigned";
+        if (label === "Unassigned") sawUnassigned = true;
       }
       sums.set(label, (sums.get(label) ?? 0) + priceForRow(r));
     }
+
+    if (!sawUnassigned) sums.delete("Unassigned");
+
     return Array.from(sums.entries()).map(([service, revenue]) => ({ service, revenue }));
-  }, [rows, svcById]);
+  }, [rows, svcById, services]);
 
   const showAddress = !!biz?.is_mobile;
 
@@ -192,6 +197,7 @@ export default function DashboardPage() {
     if (v === "rescheduled") return <span className={`${base} text-amber-300`}>Rescheduled</span>;
     if (v === "cancelled") return <span className={`${base} text-rose-400`}>Cancelled</span>;
     if (v === "completed") return <span className={`${base} text-zinc-300`}>Completed</span>;
+    if (v === "inquiry") return <span className={`${base} text-sky-300`}>Inquiry</span>;
     return <span className={`${base} text-cx-muted`}>{s ?? "-"}</span>;
   }
 
@@ -307,10 +313,10 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ title, value }: { title: string; value: string | number }) {
+function StatCard({ title, value }: { title: string | number }) {
   return (
     <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
-      <div className="text-cx-muted text-sm mb-1">{title}</div>
+      <div className="text-cx-muted text-sm mb-1">{typeof title === "string" ? title : String(title)}</div>
       <div className="text-2xl font-semibold">{value}</div>
     </div>
   );
