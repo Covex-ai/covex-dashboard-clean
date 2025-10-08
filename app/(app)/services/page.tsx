@@ -7,71 +7,154 @@ import RangePills from "@/components/RangePills";
 import { fmtUSD, normalizeService, priceFor, serviceLabelFor, toNumber, type NormalizedService } from "@/lib/pricing";
 
 type Range = "7d" | "30d" | "90d";
+type BizRow = { id: string };
 
 type ApptRow = {
   id: number;
-  start_ts: string;
+  business_id: string;
+  start_ts: string | null;
   status: string | null;
   service_raw: string | null;
   normalized_service: NormalizedService | null;
   price_usd: number | string | null;
+  service_id: number | null;
 };
 
-export default function ServicesPage() {
+type ServiceRow = {
+  id: number;
+  name: string;
+  code: string | null;
+  default_price_usd: number | string | null;
+  active: boolean | null;
+};
+
+export default function ServicesAnalyticsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [range, setRange] = useState<Range>("30d");
+  const [biz, setBiz] = useState<BizRow | null>(null);
   const [rows, setRows] = useState<ApptRow[]>([]);
+  const [services, setServices] = useState<ServiceRow[]>([]);
 
   function daysFor(r: Range) { return r === "7d" ? 7 : r === "30d" ? 30 : 90; }
 
+  useEffect(() => {
+    (async () => {
+      const { data: prof } = await supabase.from("profiles").select("business_id").maybeSingle();
+      if (prof?.business_id) setBiz({ id: prof.business_id });
+    })();
+  }, [supabase]);
+
   async function load() {
+    if (!biz?.id) return;
+
     const days = daysFor(range);
-    const from = new Date();
-    from.setDate(from.getDate() - days);
-    const { data } = await supabase
-      .from("appointments")
-      .select("id,start_ts,status,service_raw,normalized_service,price_usd")
-      .gte("start_ts", from.toISOString())
-      .order("start_ts", { ascending: true });
-    setRows((data as any) ?? []);
+    const end = new Date(); end.setHours(23,59,59,999);
+    const start = new Date(end); start.setDate(end.getDate() - (days - 1)); start.setHours(0,0,0,0);
+
+    const [{ data: appts }, { data: svcs }] = await Promise.all([
+      supabase
+        .from("appointments")
+        .select("id,business_id,start_ts,status,service_raw,normalized_service,price_usd,service_id")
+        .eq("business_id", biz.id)
+        .or(`status.ilike.inquiry%,and(start_ts.gte.${start.toISOString()},start_ts.lte.${end.toISOString()})`)
+        .order("start_ts", { ascending: true }),
+      supabase
+        .from("services")
+        .select("id,name,code,default_price_usd,active")
+        .eq("business_id", biz.id)
+        .order("active", { ascending: false })
+        .order("name", { ascending: true }),
+    ]);
+
+    setRows((appts as any) ?? []);
+    setServices((svcs as any) ?? []);
   }
 
-  useEffect(() => { load(); }, [range]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [biz?.id, range]);
+
+  const svcMap = useMemo(() => {
+    const m = new Map<number, ServiceRow>();
+    services.forEach(s => m.set(s.id, s));
+    return m;
+  }, [services]);
 
   const groups = useMemo(() => {
-    type Bucket = { label: string; bookings: number; revenue: number };
-    const map = new Map<string, Bucket>();
+    type Bucket = { key: string; label: string; bookings: number; revenue: number };
+    const m = new Map<string, Bucket>();
+
+    // seed ALL services (avoid blank/empty charts)
+    for (const s of services) {
+      const label = s.name || (s.code ?? "Service");
+      m.set(`svc_${s.id}`, { key: `svc_${s.id}`, label, bookings: 0, revenue: 0 });
+    }
+
+    let sawUnassigned = false;
 
     for (const r of rows) {
-      const ns = r.normalized_service ?? normalizeService(r.service_raw);
-      const key = ns ?? "OTHER";
-      const label = ns ? serviceLabelFor(ns, r.service_raw) : (r.service_raw ?? "Other");
+      const status = (r.status ?? "").trim().toLowerCase();
 
-      if (!map.has(key)) map.set(key, { label, bookings: 0, revenue: 0 });
+      // Put "inquiry" into Unassigned bucket (no time, no price)
+      if (status === "inquiry") {
+        sawUnassigned = true;
+        const key = "unassigned";
+        if (!m.has(key)) m.set(key, { key, label: "Unassigned", bookings: 0, revenue: 0 });
+        m.get(key)!.bookings += 1; // counts as a row; revenue stays 0
+        continue;
+      }
 
-      const b = map.get(key)!;
+      // only time-windowed appts reach here (Booked/Rescheduled/Completed/Cancelled)
+      let bucketKey: string;
+      let label: string;
+
+      if (r.service_id != null && svcMap.has(r.service_id)) {
+        const s = svcMap.get(r.service_id)!;
+        bucketKey = `svc_${s.id}`;
+        label = s.name || (s.code ?? "Service");
+      } else {
+        const ns = r.normalized_service ?? normalizeService(r.service_raw);
+        label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Unassigned";
+        bucketKey = ns ? `ns_${ns}` : "unassigned";
+        if (bucketKey === "unassigned") sawUnassigned = true;
+      }
+
+      if (!m.has(bucketKey)) {
+        m.set(bucketKey, { key: bucketKey, label, bookings: 0, revenue: 0 });
+      }
+
+      const b = m.get(bucketKey)!;
       b.bookings += 1;
-      if (r.status !== "Cancelled") {
-        b.revenue += priceFor(ns, toNumber(r.price_usd));
+
+      // revenue: exclude Cancelled; use explicit price, else service default, else fallback
+      if (status !== "cancelled") {
+        const explicit = Number(r.price_usd);
+        if (Number.isFinite(explicit) && explicit > 0) {
+          b.revenue += explicit;
+        } else if (r.service_id != null && svcMap.has(r.service_id)) {
+          b.revenue += Number(svcMap.get(r.service_id)!.default_price_usd ?? 0);
+        } else {
+          const ns = r.normalized_service ?? normalizeService(r.service_raw);
+          b.revenue += priceFor(ns, 0);
+        }
       }
     }
 
-    return Array.from(map.values());
-  }, [rows]);
+    // hide "Unassigned" if none
+    if (!sawUnassigned) m.delete("unassigned");
+
+    return Array.from(m.values());
+  }, [rows, services, svcMap]);
 
   const totalBookings = groups.reduce((a, b) => a + b.bookings, 0);
-  const totalRevenue = groups.reduce((a, b) => a + b.revenue, 0);
+  const totalRevenue  = groups.reduce((a, b) => a + b.revenue, 0);
 
   return (
     <div className="space-y-6">
-      {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatCard title="Top Service" value={groups.slice().sort((a,b)=>b.bookings-a.bookings)[0]?.label ?? "-"} />
         <StatCard title="Total Bookings" value={totalBookings} />
         <StatCard title="Revenue (excl. Cancelled)" value={fmtUSD(totalRevenue)} />
       </div>
 
-      {/* Chart with range pills ABOVE, right aligned */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold">Bookings by service (last {range})</h3>
@@ -89,7 +172,6 @@ export default function ServicesPage() {
           </ResponsiveContainer>
         </div>
 
-        {/* Table */}
         <div className="mt-6 overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="text-cx-muted">
@@ -101,7 +183,7 @@ export default function ServicesPage() {
             </thead>
             <tbody>
               {groups.map((g) => (
-                <tr key={g.label} className="border-t border-cx-border">
+                <tr key={g.key} className="border-t border-cx-border">
                   <td className="py-2 pr-4">{g.label}</td>
                   <td className="py-2 pr-4">{g.bookings}</td>
                   <td className="py-2 pr-4">{fmtUSD(g.revenue)}</td>
