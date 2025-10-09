@@ -125,25 +125,47 @@ export default function AppointmentsPage() {
     const cols =
       "id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text";
 
-    const { start, end } = windowFor(view, range);
-    const startIso = start.toISOString();
-    const endIso = end?.toISOString();
+    // If filtering specifically for Inquiry: show ONLY Inquiry, ignore time window.
+    if (statusFilter === "Inquiry") {
+      const [{ data: appts, error: aerr }, { data: svcs, error: serr }] = await Promise.all([
+        supabase
+          .from("appointments")
+          .select(cols)
+          .eq("business_id", biz.id)
+          .ilike("status", "inquiry%")
+          .order("id", { ascending: false })
+          .limit(200),
+        supabase
+          .from("services")
+          .select("id,name,code,default_price_usd")
+          .eq("business_id", biz.id)
+          .order("name", { ascending: true }),
+      ]);
 
-    // Always include Inquiries (they may have null start_ts) OR time-windowed appts
-    // - future: Inquiry OR start_ts >= start
-    // - today/all: Inquiry OR (start_ts between start and end)
+      if (aerr) setMsg(aerr.message);
+      if (serr && !aerr) setMsg(serr.message);
+      setRows((appts as any) ?? []);
+      setServices((svcs as any) ?? []);
+      setLoading(false);
+      return;
+    }
+
+    // Otherwise (All/Booked/Rescheduled/Cancelled/Completed): respect the time window and EXCLUDE Inquiry
+    const { start, end } = windowFor(view, range);
+
     let query = supabase
       .from("appointments")
       .select(cols)
-      .eq("business_id", biz.id);
+      .eq("business_id", biz.id)
+      .not("status", "ilike", "inquiry%"); // hide Inquiry from non-Inquiry views
 
     if (view === "future") {
-      query = query.or(`status.ilike.inquiry%,start_ts.gte.${startIso}`);
+      query = query.gte("start_ts", start.toISOString());
     } else {
-      query = query.or(`status.ilike.inquiry%,and(start_ts.gte.${startIso},start_ts.lte.${endIso})`);
+      query = query.gte("start_ts", start.toISOString()).lte("start_ts", end!.toISOString());
     }
 
-    query = query.order("start_ts", { ascending: true }).limit(500);
+    query = query.order("start_ts", { ascending: true });
 
     const [{ data: appts, error: aerr }, { data: svcs, error: serr }] = await Promise.all([
       query,
@@ -161,7 +183,7 @@ export default function AppointmentsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [biz?.id, view, range]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [biz?.id, view, range, statusFilter]);
 
   // realtime: only my business rows
   useEffect(() => {
@@ -312,7 +334,7 @@ export default function AppointmentsPage() {
               <tr>
                 <td colSpan={showAddress ? 8 : 7} className="py-8 text-center text-cx-muted">
                   Loading…
-                </td>
+                               </td>
               </tr>
             )}
           </tbody>
