@@ -9,9 +9,18 @@ import {
 import RangePills from "@/components/RangePills";
 import { normalizeService, priceFor as priceForFromNs, serviceLabelFor, type NormalizedService } from "@/lib/pricing";
 
-function fmtUSD(n: number) { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0); }
-function toNumber(x: unknown, fallback = 0): number { const n = Number(x); return Number.isFinite(n) ? n : fallback; }
-function mmdd(d: Date) { const mm = String(d.getMonth() + 1).padStart(2, "0"); const dd = String(d.getDate()).padStart(2, "0"); return `${mm}-${dd}`; }
+function fmtUSD(n: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
+}
+function toNumber(x: unknown, fallback = 0): number {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
+function mmdd(d: Date) {
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}-${dd}`;
+}
 
 type Range = "7d" | "30d" | "90d";
 type BizRow = { id: string; is_mobile: boolean };
@@ -19,7 +28,7 @@ type BizRow = { id: string; is_mobile: boolean };
 type ApptRow = {
   id: number;
   business_id: string;
-  start_ts: string;
+  start_ts: string | null;          // <- allow null (Inquiry)
   end_ts: string | null;
   status: string | null;
   service_raw: string | null;
@@ -68,7 +77,11 @@ export default function DashboardPage() {
       const { data: prof } = await supabase.from("profiles").select("business_id").maybeSingle();
       const business_id = (prof as any)?.business_id;
       if (!business_id) return;
-      const { data: bizRow } = await supabase.from("businesses").select("id,is_mobile").eq("id", business_id).maybeSingle<BizRow>();
+      const { data: bizRow } = await supabase
+        .from("businesses")
+        .select("id,is_mobile")
+        .eq("id", business_id)
+        .maybeSingle<BizRow>();
       if (bizRow) setBiz(bizRow);
       if (business_id) {
         const ch = supabase
@@ -94,6 +107,7 @@ export default function DashboardPage() {
         .from("appointments")
         .select("id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text")
         .eq("business_id", biz.id)
+        // include Inquiry OR rows in the window
         .or(`status.ilike.inquiry%,and(start_ts.gte.${start.toISOString()},start_ts.lte.${end.toISOString()})`)
         .order("start_ts", { ascending: true }),
       supabase
@@ -138,7 +152,7 @@ export default function DashboardPage() {
 
   const totals = useMemo(() => {
     const revenue = rows.reduce((sum, r) => sum + priceForRow(r), 0);
-    const bookings = rows.filter(r => (r.status ?? "").toLowerCase() !== "inquiry").length; // don't count inquiries as bookings
+    const bookings = rows.filter(r => (r.status ?? "").toLowerCase() !== "inquiry").length;
     return {
       bookings,
       revenue,
@@ -154,6 +168,7 @@ export default function DashboardPage() {
     while (d <= end) { map.set(mmdd(d), 0); d.setDate(d.getDate() + 1); }
     for (const r of rows) {
       if ((r.status ?? "").toLowerCase() === "inquiry") continue;
+      if (!r.start_ts) continue;
       const k = mmdd(new Date(r.start_ts));
       if (map.has(k)) map.set(k, (map.get(k) ?? 0) + 1);
     }
@@ -174,7 +189,7 @@ export default function DashboardPage() {
       let label: string;
       if (r.service_id != null && svcById.has(r.service_id)) {
         const svc = svcById.get(r.service_id)!;
-        label = svc.name || svc.code || "Service";
+        label = svc.name || (svc.code ?? "Service");
       } else {
         const ns = r.normalized_service ?? normalizeService(r.service_raw);
         label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Unassigned";
@@ -271,33 +286,35 @@ export default function DashboardPage() {
               </tr>
             </thead>
             <tbody>
-              {rows.slice(-10).map((r) => {
-                const d = new Date(r.start_ts);
-                const date = d.toLocaleDateString();
-                const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+              {rows
+                .slice(-10)
+                .map((r) => {
+                  const d = r.start_ts ? new Date(r.start_ts) : null;
+                  const date = d ? d.toLocaleDateString() : "—";
+                  const time = d ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
 
-                let svcLabel = r.service_raw || (r.normalized_service as unknown as string) || "Service";
-                if (r.service_id != null) {
-                  const svc = svcById.get(r.service_id);
-                  if (svc?.name) svcLabel = svc.name;
-                } else {
-                  const ns = r.normalized_service ?? normalizeService(r.service_raw);
-                  svcLabel = serviceLabelFor(ns, r.service_raw) || svcLabel;
-                }
+                  let svcLabel = r.service_raw || (r.normalized_service as unknown as string) || "Service";
+                  if (r.service_id != null) {
+                    const svc = svcById.get(r.service_id);
+                    if (svc?.name) svcLabel = svc.name;
+                  } else {
+                    const ns = r.normalized_service ?? normalizeService(r.service_raw);
+                    svcLabel = serviceLabelFor(ns, r.service_raw) || svcLabel;
+                  }
 
-                return (
-                  <tr key={r.id} className="border-t border-cx-border">
-                    <td className="py-2 pr-4">{date}</td>
-                    <td className="py-2 pr-4">{time}</td>
-                    <td className="py-2 pr-4">{svcLabel}</td>
-                    <td className="py-2 pr-4">{r.caller_name ?? "—"}</td>
-                    <td className="py-2 pr-4">{r.caller_phone_e164 ?? "—"}</td>
-                    {showAddress && <td className="py-2 pr-4">{r.address_text ?? "—"}</td>}
-                    <td className="py-2 pr-4"><StatusPill s={r.status} /></td>
-                    <td className="py-2 pr-4">{fmtUSD(priceForRow(r))}</td>
-                  </tr>
-                );
-              })}
+                  return (
+                    <tr key={r.id} className="border-t border-cx-border">
+                      <td className="py-2 pr-4">{date}</td>
+                      <td className="py-2 pr-4">{time}</td>
+                      <td className="py-2 pr-4">{svcLabel}</td>
+                      <td className="py-2 pr-4">{r.caller_name ?? "—"}</td>
+                      <td className="py-2 pr-4">{r.caller_phone_e164 ?? "—"}</td>
+                      {showAddress && <td className="py-2 pr-4">{r.address_text ?? "—"}</td>}
+                      <td className="py-2 pr-4"><StatusPill s={r.status} /></td>
+                      <td className="py-2 pr-4">{fmtUSD(priceForRow(r))}</td>
+                    </tr>
+                  );
+                })}
               {rows.length === 0 && (
                 <tr>
                   <td className="py-6 text-center text-cx-muted" colSpan={showAddress ? 8 : 7}>
@@ -313,7 +330,10 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ title, value }: { title: string | number }) {
+/* ---- fixed typings here ---- */
+type StatCardProps = { title: string | number; value: string | number };
+
+function StatCard({ title, value }: StatCardProps) {
   return (
     <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
       <div className="text-cx-muted text-sm mb-1">{typeof title === "string" ? title : String(title)}</div>
