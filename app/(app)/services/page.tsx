@@ -56,7 +56,10 @@ export default function ServicesAnalyticsPage() {
         .from("appointments")
         .select("id,business_id,start_ts,status,service_raw,normalized_service,price_usd,service_id")
         .eq("business_id", biz.id)
-        .or(`status.ilike.inquiry%,and(start_ts.gte.${start.toISOString()},start_ts.lte.${end.toISOString()})`)
+        // ⬇️ Exclude Inquiry completely; only time-windowed real appts
+        .gte("start_ts", start.toISOString())
+        .lte("start_ts", end.toISOString())
+        .not("status", "ilike", "inquiry%")
         .order("start_ts", { ascending: true }),
       supabase
         .from("services")
@@ -88,21 +91,11 @@ export default function ServicesAnalyticsPage() {
       m.set(`svc_${s.id}`, { key: `svc_${s.id}`, label, bookings: 0, revenue: 0 });
     }
 
-    let sawUnassigned = false;
-
     for (const r of rows) {
       const status = (r.status ?? "").trim().toLowerCase();
+      if (status === "inquiry") continue; // safety: we already excluded, but double-guard
 
-      // Put "inquiry" into Unassigned bucket (no time, no price)
-      if (status === "inquiry") {
-        sawUnassigned = true;
-        const key = "unassigned";
-        if (!m.has(key)) m.set(key, { key, label: "Unassigned", bookings: 0, revenue: 0 });
-        m.get(key)!.bookings += 1; // counts as a row; revenue stays 0
-        continue;
-      }
-
-      // only time-windowed appts reach here (Booked/Rescheduled/Completed/Cancelled)
+      // bucket selection
       let bucketKey: string;
       let label: string;
 
@@ -114,7 +107,6 @@ export default function ServicesAnalyticsPage() {
         const ns = r.normalized_service ?? normalizeService(r.service_raw);
         label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Unassigned";
         bucketKey = ns ? `ns_${ns}` : "unassigned";
-        if (bucketKey === "unassigned") sawUnassigned = true;
       }
 
       if (!m.has(bucketKey)) {
@@ -122,15 +114,17 @@ export default function ServicesAnalyticsPage() {
       }
 
       const b = m.get(bucketKey)!;
+
+      // Bookings: count all non-inquiry rows (Booked/Rescheduled/Completed/Cancelled)
       b.bookings += 1;
 
-      // revenue: exclude Cancelled; use explicit price, else service default, else fallback
+      // Revenue: exclude Cancelled
       if (status !== "cancelled") {
-        const explicit = Number(r.price_usd);
+        const explicit = toNumber(r.price_usd, NaN);
         if (Number.isFinite(explicit) && explicit > 0) {
           b.revenue += explicit;
         } else if (r.service_id != null && svcMap.has(r.service_id)) {
-          b.revenue += Number(svcMap.get(r.service_id)!.default_price_usd ?? 0);
+          b.revenue += toNumber(svcMap.get(r.service_id)!.default_price_usd, 0);
         } else {
           const ns = r.normalized_service ?? normalizeService(r.service_raw);
           b.revenue += priceFor(ns, 0);
@@ -138,8 +132,11 @@ export default function ServicesAnalyticsPage() {
       }
     }
 
-    // hide "Unassigned" if none
-    if (!sawUnassigned) m.delete("unassigned");
+    // If "Unassigned" exists but remains zero across both bookings & revenue, hide it
+    const unassigned = m.get("unassigned");
+    if (unassigned && unassigned.bookings === 0 && unassigned.revenue === 0) {
+      m.delete("unassigned");
+    }
 
     return Array.from(m.values());
   }, [rows, services, svcMap]);
