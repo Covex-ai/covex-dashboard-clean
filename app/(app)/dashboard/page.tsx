@@ -12,15 +12,8 @@ import { normalizeService, priceFor as priceForFromNs, serviceLabelFor, type Nor
 function fmtUSD(n: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n || 0);
 }
-function toNumber(x: unknown, fallback = 0): number {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
-}
-function mmdd(d: Date) {
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${mm}-${dd}`;
-}
+function toNumber(x: unknown, fallback = 0): number { const n = Number(x); return Number.isFinite(n) ? n : fallback; }
+function mmdd(d: Date) { const mm = String(d.getMonth() + 1).padStart(2, "0"); const dd = String(d.getDate()).padStart(2, "0"); return `${mm}-${dd}`; }
 
 type Range = "7d" | "30d" | "90d";
 type BizRow = { id: string; is_mobile: boolean };
@@ -28,7 +21,7 @@ type BizRow = { id: string; is_mobile: boolean };
 type ApptRow = {
   id: number;
   business_id: string;
-  start_ts: string | null;          // <- allow null (Inquiry)
+  start_ts: string | null;   // Inquiry can be null
   end_ts: string | null;
   status: string | null;
   service_raw: string | null;
@@ -77,11 +70,7 @@ export default function DashboardPage() {
       const { data: prof } = await supabase.from("profiles").select("business_id").maybeSingle();
       const business_id = (prof as any)?.business_id;
       if (!business_id) return;
-      const { data: bizRow } = await supabase
-        .from("businesses")
-        .select("id,is_mobile")
-        .eq("id", business_id)
-        .maybeSingle<BizRow>();
+      const { data: bizRow } = await supabase.from("businesses").select("id,is_mobile").eq("id", business_id).maybeSingle<BizRow>();
       if (bizRow) setBiz(bizRow);
       if (business_id) {
         const ch = supabase
@@ -107,7 +96,7 @@ export default function DashboardPage() {
         .from("appointments")
         .select("id,business_id,start_ts,end_ts,status,service_raw,normalized_service,price_usd,caller_name,caller_phone_e164,service_id,address_text")
         .eq("business_id", biz.id)
-        // include Inquiry OR rows in the window
+        // include Inquiry (no time) OR time-windowed rows
         .or(`status.ilike.inquiry%,and(start_ts.gte.${start.toISOString()},start_ts.lte.${end.toISOString()})`)
         .order("start_ts", { ascending: true }),
       supabase
@@ -150,6 +139,7 @@ export default function DashboardPage() {
     return priceForFromNs(ns, toNumber(row.price_usd, 0));
   }
 
+  // Top cards
   const totals = useMemo(() => {
     const revenue = rows.reduce((sum, r) => sum + priceForRow(r), 0);
     const bookings = rows.filter(r => (r.status ?? "").toLowerCase() !== "inquiry").length;
@@ -161,6 +151,7 @@ export default function DashboardPage() {
     };
   }, [rows, svcById]);
 
+  // Bookings per day (excludes Inquiry)
   const bookingsSeries = useMemo(() => {
     const { start, end } = dateWindow(range);
     const map = new Map<string, number>();
@@ -174,13 +165,13 @@ export default function DashboardPage() {
     }
     return Array.from(map.entries()).map(([date, count]) => ({ date, count }));
   }, [rows, range]);
+  const hasBookings = bookingsSeries.some(p => p.count > 0);
 
+  // Revenue by service (excludes Inquiry; never shows an "Unassigned" bar caused by inquiries)
   const revenueByService = useMemo(() => {
-    // seed with all services so the chart/table never looks broken/blank
     const sums = new Map<string, number>();
+    // seed with your known services so axes look stable
     for (const s of services) sums.set(s.name || s.code || "Service", 0);
-
-    let sawUnassigned = false;
 
     for (const r of rows) {
       const status = (r.status ?? "").toLowerCase();
@@ -191,17 +182,21 @@ export default function DashboardPage() {
         const svc = svcById.get(r.service_id)!;
         label = svc.name || (svc.code ?? "Service");
       } else {
+        // Only treat as "Unassigned" for non-inquiry bookings without a service match.
         const ns = r.normalized_service ?? normalizeService(r.service_raw);
         label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Unassigned";
-        if (label === "Unassigned") sawUnassigned = true;
       }
       sums.set(label, (sums.get(label) ?? 0) + priceForRow(r));
     }
 
-    if (!sawUnassigned) sums.delete("Unassigned");
+    // If all real services are zero, keep zeros (stable axis). If *only* "Unassigned" exists and it's 0, drop it.
+    if ([...sums.keys()].length === 1 && sums.has("Unassigned") && (sums.get("Unassigned") ?? 0) === 0) {
+      sums.delete("Unassigned");
+    }
 
     return Array.from(sums.entries()).map(([service, revenue]) => ({ service, revenue }));
   }, [rows, svcById, services]);
+  const hasRevenue = revenueByService.some(r => r.revenue > 0);
 
   const showAddress = !!biz?.is_mobile;
 
@@ -234,15 +229,21 @@ export default function DashboardPage() {
             <RangePills value={range} onChange={setRange} />
           </div>
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={bookingsSeries}>
-                <CartesianGrid vertical={false} stroke="#1a1a1a" />
-                <XAxis dataKey="date" tickMargin={8} />
-                <YAxis allowDecimals={false} width={24} />
-                <Tooltip formatter={(v: any) => [`Bookings: ${v}`, ""]} />
-                <Line type="monotone" dataKey="count" stroke="#ffffff" dot={{ r: 3, fill: "#ffffff" }} />
-              </LineChart>
-            </ResponsiveContainer>
+            {hasBookings ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={bookingsSeries}>
+                  <CartesianGrid vertical={false} stroke="#1a1a1a" />
+                  <XAxis dataKey="date" tickMargin={8} />
+                  <YAxis allowDecimals={false} width={24} />
+                  <Tooltip formatter={(v: any) => [`Bookings: ${v}`, ""]} />
+                  <Line type="monotone" dataKey="count" stroke="#ffffff" dot={{ r: 3, fill: "#ffffff" }} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-cx-muted text-sm">
+                No bookings in this range.
+              </div>
+            )}
           </div>
         </div>
 
@@ -252,48 +253,48 @@ export default function DashboardPage() {
             <RangePills value={range} onChange={setRange} />
           </div>
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={revenueByService}>
-                <CartesianGrid vertical={false} stroke="#1a1a1a" />
-                <XAxis dataKey="service" interval={0} tickMargin={12} />
-                <YAxis width={40} />
-                <Tooltip formatter={(v: any) => [fmtUSD(Number(v)), ""]} />
-                <Bar dataKey="revenue" fill="#ffffff" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {hasRevenue ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={revenueByService}>
+                  <CartesianGrid vertical={false} stroke="#1a1a1a" />
+                  <XAxis dataKey="service" interval={0} tickMargin={12} />
+                  <YAxis width={40} />
+                  <Tooltip formatter={(v: any) => [fmtUSD(Number(v)), ""]} />
+                  <Bar dataKey="revenue" fill="#ffffff" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-cx-muted text-sm">
+                No revenue in this range.
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Recent appointments */}
+      {/* Recent inquiries (ONLY Inquiry, no date/time/price) */}
       <div className="bg-cx-surface border border-cx-border rounded-2xl p-4">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold">Recent appointments</h3>
+          <h3 className="font-semibold">Recent inquiries</h3>
         </div>
 
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="text-cx-muted">
               <tr className="text-left">
-                <th className="py-2 pr-4">Date</th>
-                <th className="py-2 pr-4">Time</th>
                 <th className="py-2 pr-4">Service</th>
                 <th className="py-2 pr-4">Name</th>
                 <th className="py-2 pr-4">Phone</th>
                 {showAddress && <th className="py-2 pr-4">Address</th>}
                 <th className="py-2 pr-4">Status</th>
-                <th className="py-2 pr-4">Price</th>
               </tr>
             </thead>
             <tbody>
               {rows
+                .filter(r => (r.status ?? "").toLowerCase() === "inquiry")
                 .slice(-10)
                 .map((r) => {
-                  const d = r.start_ts ? new Date(r.start_ts) : null;
-                  const date = d ? d.toLocaleDateString() : "—";
-                  const time = d ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
-
-                  let svcLabel = r.service_raw || (r.normalized_service as unknown as string) || "Service";
+                  let svcLabel = r.service_raw || (r.normalized_service as unknown as string) || "—";
                   if (r.service_id != null) {
                     const svc = svcById.get(r.service_id);
                     if (svc?.name) svcLabel = svc.name;
@@ -301,24 +302,20 @@ export default function DashboardPage() {
                     const ns = r.normalized_service ?? normalizeService(r.service_raw);
                     svcLabel = serviceLabelFor(ns, r.service_raw) || svcLabel;
                   }
-
                   return (
                     <tr key={r.id} className="border-t border-cx-border">
-                      <td className="py-2 pr-4">{date}</td>
-                      <td className="py-2 pr-4">{time}</td>
                       <td className="py-2 pr-4">{svcLabel}</td>
                       <td className="py-2 pr-4">{r.caller_name ?? "—"}</td>
                       <td className="py-2 pr-4">{r.caller_phone_e164 ?? "—"}</td>
                       {showAddress && <td className="py-2 pr-4">{r.address_text ?? "—"}</td>}
                       <td className="py-2 pr-4"><StatusPill s={r.status} /></td>
-                      <td className="py-2 pr-4">{fmtUSD(priceForRow(r))}</td>
                     </tr>
                   );
                 })}
-              {rows.length === 0 && (
+              {rows.filter(r => (r.status ?? "").toLowerCase() === "inquiry").length === 0 && (
                 <tr>
-                  <td className="py-6 text-center text-cx-muted" colSpan={showAddress ? 8 : 7}>
-                    No appointments in the selected range.
+                  <td className="py-6 text-center text-cx-muted" colSpan={showAddress ? 5 : 4}>
+                    No inquiries yet.
                   </td>
                 </tr>
               )}
@@ -330,7 +327,7 @@ export default function DashboardPage() {
   );
 }
 
-/* ---- fixed typings here ---- */
+/* ---- fixed typings for StatCard ---- */
 type StatCardProps = { title: string | number; value: string | number };
 
 function StatCard({ title, value }: StatCardProps) {
