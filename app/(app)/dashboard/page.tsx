@@ -15,6 +15,15 @@ function fmtUSD(n: number) {
 function toNumber(x: unknown, fallback = 0): number { const n = Number(x); return Number.isFinite(n) ? n : fallback; }
 function mmdd(d: Date) { const mm = String(d.getMonth() + 1).padStart(2, "0"); const dd = String(d.getDate()).padStart(2, "0"); return `${mm}-${dd}`; }
 
+// ── NEW: canonicalize labels so tiny diffs don't create extra bars
+const canon = (s: string | null | undefined) =>
+  (s ?? "")
+    .normalize("NFKD")
+    .replace(/\s+/g, " ")
+    .replace(/[^\w\s/+.-]/g, "")
+    .trim()
+    .toLowerCase();
+
 type Range = "7d" | "30d" | "90d";
 type BizRow = { id: string; is_mobile: boolean };
 
@@ -54,6 +63,29 @@ export default function DashboardPage() {
     services.forEach((s) => m.set(s.id, s));
     return m;
   }, [services]);
+
+  // Map canonical key -> display label for known services
+  const svcCanonToLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    services.forEach(s => {
+      const display = s.name || s.code || "Service";
+      m.set(canon(display), display);
+    });
+    return m;
+  }, [services]);
+
+  function canonKeyForAppt(r: ApptRow): string {
+    // prefer authoritative service_id
+    if (r.service_id != null && svcById.has(r.service_id)) {
+      const s = svcById.get(r.service_id)!;
+      return canon(s.name || s.code || "Service");
+    }
+    // fallback from normalized/service_raw
+    const ns = r.normalized_service ?? normalizeService(r.service_raw);
+    const guessLabel = serviceLabelFor(ns, r.service_raw) || r.service_raw || "";
+    const key = canon(guessLabel);
+    return svcCanonToLabel.has(key) ? key : "unassigned";
+  }
 
   function daysFor(r: Range) { return r === "7d" ? 7 : r === "30d" ? 30 : 90; }
   function dateWindow(r: Range) {
@@ -167,35 +199,26 @@ export default function DashboardPage() {
   }, [rows, range]);
   const hasBookings = bookingsSeries.some(p => p.count > 0);
 
-  // Revenue by service (excludes Inquiry; never shows an "Unassigned" bar caused by inquiries)
+  // Revenue by service (excludes Inquiry/Cancelled; folds label variants)
   const revenueByService = useMemo(() => {
     const sums = new Map<string, number>();
-    // seed with your known services so axes look stable
-    for (const s of services) sums.set(s.name || s.code || "Service", 0);
+    // seed all services (stable axis, even when zero)
+    svcCanonToLabel.forEach((_label, key) => sums.set(key, 0));
 
     for (const r of rows) {
       const status = (r.status ?? "").toLowerCase();
       if (status === "cancelled" || status === "inquiry") continue;
 
-      let label: string;
-      if (r.service_id != null && svcById.has(r.service_id)) {
-        const svc = svcById.get(r.service_id)!;
-        label = svc.name || (svc.code ?? "Service");
-      } else {
-        // Only treat as "Unassigned" for non-inquiry bookings without a service match.
-        const ns = r.normalized_service ?? normalizeService(r.service_raw);
-        label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Unassigned";
-      }
-      sums.set(label, (sums.get(label) ?? 0) + priceForRow(r));
+      const key = canonKeyForAppt(r);
+      if (key === "unassigned") continue; // ignore casing-only mismatches
+      sums.set(key, (sums.get(key) ?? 0) + priceForRow(r));
     }
 
-    // If all real services are zero, keep zeros (stable axis). If *only* "Unassigned" exists and it's 0, drop it.
-    if ([...sums.keys()].length === 1 && sums.has("Unassigned") && (sums.get("Unassigned") ?? 0) === 0) {
-      sums.delete("Unassigned");
-    }
-
-    return Array.from(sums.entries()).map(([service, revenue]) => ({ service, revenue }));
-  }, [rows, svcById, services]);
+    return Array.from(sums.entries()).map(([key, revenue]) => ({
+      service: svcCanonToLabel.get(key) || "Service",
+      revenue,
+    }));
+  }, [rows, svcById, services, svcCanonToLabel]);
   const hasRevenue = revenueByService.some(r => r.revenue > 0);
 
   const showAddress = !!biz?.is_mobile;
@@ -257,7 +280,8 @@ export default function DashboardPage() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={revenueByService}>
                   <CartesianGrid vertical={false} stroke="#1a1a1a" />
-                  <XAxis dataKey="service" interval={0} tickMargin={12} />
+                  {/* Hide tick labels to avoid crowding; tooltips still show names */}
+                  <XAxis dataKey="service" hide tick={false} axisLine={false} tickLine={false} />
                   <YAxis width={40} />
                   <Tooltip formatter={(v: any) => [fmtUSD(Number(v)), ""]} />
                   <Bar dataKey="revenue" fill="#ffffff" radius={[8, 8, 0, 0]} />
