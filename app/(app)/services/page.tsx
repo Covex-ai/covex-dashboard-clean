@@ -28,6 +28,10 @@ type ServiceRow = {
   active: boolean | null;
 };
 
+// canonicalize labels (match Overview)
+const canon = (s: string | null | undefined) =>
+  (s ?? "").normalize("NFKD").replace(/\s+/g, " ").replace(/[^\w\s/+.-]/g, "").trim().toLowerCase();
+
 export default function ServicesAnalyticsPage() {
   const supabase = useMemo(() => createBrowserClient(), []);
   const [range, setRange] = useState<Range>("30d");
@@ -56,7 +60,7 @@ export default function ServicesAnalyticsPage() {
         .from("appointments")
         .select("id,business_id,start_ts,status,service_raw,normalized_service,price_usd,service_id")
         .eq("business_id", biz.id)
-        // ⬇️ Exclude Inquiry completely; only time-windowed real appts
+        // Exclude Inquiry; only real time-windowed appts
         .gte("start_ts", start.toISOString())
         .lte("start_ts", end.toISOString())
         .not("status", "ilike", "inquiry%")
@@ -81,44 +85,49 @@ export default function ServicesAnalyticsPage() {
     return m;
   }, [services]);
 
+  const svcCanonToLabel = useMemo(() => {
+    const m = new Map<string, string>();
+    services.forEach(s => {
+      const display = s.name || s.code || "Service";
+      m.set(canon(display), display);
+    });
+    return m;
+  }, [services]);
+
+  function canonKeyForAppt(r: ApptRow): string {
+    if (r.service_id != null && svcMap.has(r.service_id)) {
+      const s = svcMap.get(r.service_id)!;
+      return canon(s.name || s.code || "Service");
+    }
+    const ns = r.normalized_service ?? normalizeService(r.service_raw);
+    const guessLabel = serviceLabelFor(ns, r.service_raw) || r.service_raw || "";
+    const key = canon(guessLabel);
+    return svcCanonToLabel.has(key) ? key : "unassigned";
+  }
+
   const groups = useMemo(() => {
     type Bucket = { key: string; label: string; bookings: number; revenue: number };
     const m = new Map<string, Bucket>();
 
-    // seed ALL services (avoid blank/empty charts)
-    for (const s of services) {
-      const label = s.name || (s.code ?? "Service");
-      m.set(`svc_${s.id}`, { key: `svc_${s.id}`, label, bookings: 0, revenue: 0 });
-    }
+    // seed ALL known services
+    svcCanonToLabel.forEach((label, key) => {
+      m.set(key, { key, label, bookings: 0, revenue: 0 });
+    });
 
     for (const r of rows) {
       const status = (r.status ?? "").trim().toLowerCase();
-      if (status === "inquiry") continue; // safety: we already excluded, but double-guard
+      if (status === "inquiry") continue; // safety
 
-      // bucket selection
-      let bucketKey: string;
-      let label: string;
+      const key = canonKeyForAppt(r);
+      if (key === "unassigned") continue; // ignore casing-only mismatches
 
-      if (r.service_id != null && svcMap.has(r.service_id)) {
-        const s = svcMap.get(r.service_id)!;
-        bucketKey = `svc_${s.id}`;
-        label = s.name || (s.code ?? "Service");
-      } else {
-        const ns = r.normalized_service ?? normalizeService(r.service_raw);
-        label = serviceLabelFor(ns, r.service_raw) || r.service_raw || "Unassigned";
-        bucketKey = ns ? `ns_${ns}` : "unassigned";
+      if (!m.has(key)) {
+        m.set(key, { key, label: svcCanonToLabel.get(key) || "Service", bookings: 0, revenue: 0 });
       }
 
-      if (!m.has(bucketKey)) {
-        m.set(bucketKey, { key: bucketKey, label, bookings: 0, revenue: 0 });
-      }
-
-      const b = m.get(bucketKey)!;
-
-      // Bookings: count all non-inquiry rows (Booked/Rescheduled/Completed/Cancelled)
+      const b = m.get(key)!;
       b.bookings += 1;
 
-      // Revenue: exclude Cancelled
       if (status !== "cancelled") {
         const explicit = toNumber(r.price_usd, NaN);
         if (Number.isFinite(explicit) && explicit > 0) {
@@ -132,14 +141,8 @@ export default function ServicesAnalyticsPage() {
       }
     }
 
-    // If "Unassigned" exists but remains zero across both bookings & revenue, hide it
-    const unassigned = m.get("unassigned");
-    if (unassigned && unassigned.bookings === 0 && unassigned.revenue === 0) {
-      m.delete("unassigned");
-    }
-
     return Array.from(m.values());
-  }, [rows, services, svcMap]);
+  }, [rows, svcMap, svcCanonToLabel]);
 
   const totalBookings = groups.reduce((a, b) => a + b.bookings, 0);
   const totalRevenue  = groups.reduce((a, b) => a + b.revenue, 0);
@@ -161,7 +164,8 @@ export default function ServicesAnalyticsPage() {
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={groups}>
               <CartesianGrid vertical={false} stroke="#1a1a1a" />
-              <XAxis dataKey="label" interval={0} tickMargin={12} />
+              {/* Hide X ticks; use tooltip for labels */}
+              <XAxis dataKey="label" hide tick={false} axisLine={false} tickLine={false} />
               <YAxis allowDecimals={false} />
               <Tooltip formatter={(v: any, n: string) => n === "bookings" ? [`Bookings: ${v}`, ""] : [fmtUSD(Number(v)), ""]} />
               <Bar dataKey="bookings" fill="#ffffff" radius={[8,8,0,0]} />
